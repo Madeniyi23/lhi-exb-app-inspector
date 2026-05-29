@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 06: Full Single-App Inspection Runner v0.8.3
+Script 06: Full Single-App Inspection Runner v1.1
 
 Purpose:
 - Run the full single-app inspection pipeline:
@@ -8,12 +8,14 @@ Purpose:
   02_extract_exb_dependencies.py
   03_scan_webmap_layers.py
   04_check_layer_health.py
+  08_resolve_layer_identity.py
   05_check_sharing_compatibility.py
 
 - Automatically find the newest output from each stage
 - Reduce manual filename mistakes
 - Produce a final HTML sharing compatibility report
 - Print machine-readable failure stage/error markers for Script 07
+- Run Script 08 Layer Identity Resolver after layer health checks
 - Prompt for username/password once and reuse credentials securely during this run
 
 Author: Lazy Hat Innovations
@@ -50,6 +52,7 @@ SCRIPT_02 = "02_extract_exb_dependencies.py"
 SCRIPT_03 = "03_scan_webmap_layers.py"
 SCRIPT_04 = "04_check_layer_health.py"
 SCRIPT_05 = "05_check_sharing_compatibility.py"
+SCRIPT_08 = "08_resolve_layer_identity.py"
 
 
 # -----------------------------------------------------------------------------
@@ -72,6 +75,8 @@ class PipelineOutputs:
     exb_resolution_csv: Optional[Path] = None
     layer_health_summary_csv: Optional[Path] = None
     layer_health_details_csv: Optional[Path] = None
+    layer_identity_summary_csv: Optional[Path] = None
+    layer_identity_resolution_csv: Optional[Path] = None
     sharing_summary_csv: Optional[Path] = None
     sharing_details_csv: Optional[Path] = None
     sharing_recommendations_csv: Optional[Path] = None
@@ -350,6 +355,44 @@ def run_stage_04(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     logging.info("Stage 04 layer health details: %s", outputs.layer_health_details_csv)
 
 
+def run_stage_08(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bool, env: Optional[dict] = None) -> None:
+    if not outputs.webmap_layers_csv:
+        raise RuntimeError("Stage 08 requires webmap layers from Stage 03.")
+    if not outputs.layer_health_details_csv:
+        raise RuntimeError("Stage 08 requires layer health details from Stage 04.")
+
+    start = dt.now().timestamp()
+
+    cmd = [
+        python_cmd(),
+        SCRIPT_08,
+        "--webmap-layers-csv",
+        quote_path(outputs.webmap_layers_csv),
+        "--layer-health-details-csv",
+        quote_path(outputs.layer_health_details_csv),
+    ]
+
+    if args.portal:
+        cmd.extend(["--portal", args.portal])
+    if args.username and not args.anonymous:
+        cmd.extend(["--username", args.username])
+    if args.anonymous:
+        cmd.append("--anonymous")
+    if args.output_prefix:
+        cmd.extend(["--output-prefix", args.output_prefix])
+
+    run_command(cmd, "Stage 08 - Layer Identity Resolution", dry_run=dry_run, env=env)
+
+    if dry_run:
+        return
+
+    outputs.layer_identity_summary_csv = latest_file(CSV_DIR, "layer_identity_summary_*.csv", since=start)
+    outputs.layer_identity_resolution_csv = latest_file(CSV_DIR, "layer_identity_resolution_*.csv", since=start)
+
+    logging.info("Stage 08 layer identity summary: %s", outputs.layer_identity_summary_csv)
+    logging.info("Stage 08 layer identity resolution: %s", outputs.layer_identity_resolution_csv)
+
+
 def run_stage_05(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bool, env: Optional[dict] = None) -> None:
     required = {
         "app summary": outputs.app_summary_csv,
@@ -451,9 +494,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-stage",
         action="append",
-        choices=["01", "02", "03", "04", "05"],
+        choices=["01", "02", "03", "04", "05", "08"],
         default=[],
-        help="Skip a stage. Mostly for debugging; not recommended for normal runs.",
+        help="Skip a stage. Mostly for debugging; not recommended for normal runs. Use 08 to skip layer identity resolution.",
     )
     parser.add_argument(
         "--dry-run",
@@ -482,6 +525,10 @@ def print_final_summary(outputs: PipelineOutputs, log_path: Path) -> None:
         print(f"Layer health summary: {outputs.layer_health_summary_csv}")
     if outputs.layer_health_details_csv:
         print(f"Layer health details: {outputs.layer_health_details_csv}")
+    if outputs.layer_identity_summary_csv:
+        print(f"Layer identity summary: {outputs.layer_identity_summary_csv}")
+    if outputs.layer_identity_resolution_csv:
+        print(f"Layer identity resolution: {outputs.layer_identity_resolution_csv}")
     if outputs.sharing_summary_csv:
         print(f"Sharing summary: {outputs.sharing_summary_csv}")
     if outputs.sharing_recommendations_csv:
@@ -501,7 +548,7 @@ def main() -> int:
     outputs = PipelineOutputs()
 
     try:
-        for script in [SCRIPT_01, SCRIPT_02, SCRIPT_03, SCRIPT_04, SCRIPT_05]:
+        for script in [SCRIPT_01, SCRIPT_02, SCRIPT_03, SCRIPT_04, SCRIPT_08, SCRIPT_05]:
             require_file(Path(script), f"Required script {script}")
 
         logging.info("Starting full ExB app inspection pipeline.")
@@ -519,6 +566,9 @@ def main() -> int:
 
         if "04" not in args.skip_stage:
             run_stage_04(args, outputs, args.dry_run, env=env)
+
+        if "08" not in args.skip_stage:
+            run_stage_08(args, outputs, args.dry_run, env=env)
 
         if "05" not in args.skip_stage:
             run_stage_05(args, outputs, args.dry_run, env=env)

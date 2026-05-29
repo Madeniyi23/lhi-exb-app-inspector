@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 04: Layer Health Checker v0.8.2
+Script 04: Layer Health Checker v0.8.5
 
 Purpose:
 - Read webmap_layers_*.csv from Script 03
@@ -27,6 +27,7 @@ import csv
 import getpass
 import json
 import logging
+import re
 import os
 import sys
 import time
@@ -242,10 +243,14 @@ def is_valid_url(url: str) -> bool:
 def classify_service_host(url: str) -> Tuple[str, str, bool, str]:
     """
     Classifies service host/path patterns that often indicate internal,
-    development, test, or non-public ArcGIS Server endpoints.
+    development, test, staging, UAT, or non-public ArcGIS Server endpoints.
 
-    This does not prove a service is inaccessible; it is a governance signal
-    used by later reporting logic.
+    Refinement:
+    - Does NOT flag ordinary business words like "Development" or "Development Applications".
+    - Flags environment indicators only when they appear as clear host/path tokens,
+      such as /dev/, gis-dev, dev-gis, _dev_, test-server, /uat/, /staging/.
+    - Strong internal indicators such as appint, gisappint, General_Int, _int, and internal
+      are still flagged.
     """
     if not url:
         return "", "", False, ""
@@ -256,7 +261,12 @@ def classify_service_host(url: str) -> Tuple[str, str, bool, str]:
 
     reasons: List[str] = []
 
-    host_patterns = [
+    def add(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    # Strong host indicators. These are safe to match as substrings.
+    strong_host_patterns = [
         ("localhost", "localhost host"),
         ("127.0.0.1", "loopback host"),
         ("intranet", "intranet host"),
@@ -264,33 +274,47 @@ def classify_service_host(url: str) -> Tuple[str, str, bool, str]:
         ("appint", "internal app server host pattern"),
         ("gisappint", "internal GIS app server host pattern"),
         ("arcgisint", "internal ArcGIS host pattern"),
-        ("dev", "development host pattern"),
-        ("test", "test host pattern"),
-        ("staging", "staging host pattern"),
-        ("uat", "UAT host pattern"),
     ]
 
-    path_patterns = [
+    for pattern, reason in strong_host_patterns:
+        if pattern in host:
+            add(reason)
+
+    # Strong path indicators. These are safe to match as substrings.
+    strong_path_patterns = [
+        ("general_int", "internal General_Int service folder"),
         ("_int", "internal service path pattern"),
         ("/int/", "internal path segment"),
-        ("general_int", "internal General_Int service folder"),
+        ("/internal/", "internal service path"),
         ("internal", "internal service path"),
-        ("dev", "development service path"),
-        ("test", "test service path"),
-        ("staging", "staging service path"),
-        ("uat", "UAT service path"),
     ]
 
-    for pattern, reason in host_patterns:
-        if pattern in host:
-            reasons.append(reason)
-
-    for pattern, reason in path_patterns:
+    for pattern, reason in strong_path_patterns:
         if pattern in path:
-            reasons.append(reason)
+            add(reason)
+
+    # Environment indicators should be token-aware, not substring-aware.
+    # This prevents false positives from business terms such as "Development".
+    host_tokens = [token for token in re.split(r"[^a-z0-9]+", host) if token]
+    path_tokens = [token for token in re.split(r"[^a-z0-9]+", path) if token]
+
+    environment_tokens = {
+        "dev": "development environment token",
+        "test": "test environment token",
+        "staging": "staging environment token",
+        "stage": "staging environment token",
+        "uat": "UAT environment token",
+        "qa": "QA environment token",
+        "sandbox": "sandbox environment token",
+    }
+
+    for token in host_tokens + path_tokens:
+        reason = environment_tokens.get(token)
+        if reason:
+            add(reason)
 
     internal = bool(reasons)
-    return host, parsed.path or "", internal, "; ".join(sorted(set(reasons)))
+    return host, parsed.path or "", internal, "; ".join(sorted(reasons))
 
 
 def dedupe_layer_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:

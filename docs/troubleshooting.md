@@ -1,43 +1,36 @@
 # Troubleshooting
 
-## Script 07 says an app failed
+## App failed in the master report
 
-Open the master report and expand the failed app row. It should show:
+Expand the row in the master HTML. Review:
 
 - failed stage code
 - failed stage name
 - error message
-- child log path
+- child stage logs
 
-Common failed stages:
+## Common failed stages
 
 | Stage | Meaning |
 |---|---|
-| Stage 01 | App item metadata/config could not be read |
-| Stage 02 | ExB dependency extraction failed |
-| Stage 03 | Web map/layer scan failed |
-| Stage 04 | Layer health check failed |
-| Stage 05 | Sharing compatibility report failed |
+| Stage 01 | App metadata/config issue |
+| Stage 02 | ExB dependency extraction issue |
+| Stage 03 | Web map scan issue |
+| Stage 04 | Layer health check issue |
+| Stage 08 | Layer identity resolver issue |
+| Stage 05 | Sharing compatibility/report issue |
 
-## Invalid token behavior
+## Where to find logs
 
-Some public or non-federated ArcGIS Server services reject AGOL tokens. Script 04 uses anonymous-first testing by default to avoid false failures.
+Each app folder includes:
 
-## Internal service detected
+```text
+app_scan.log
+logs/
+```
 
-Internal host detection looks for patterns such as:
+The `logs/` folder contains child-stage logs created during the scan.
 
-- `internal`
-- `appint`
-- `gisappint`
-- `General_Int`
-- `dev`
-- `test`
-- `uat`
-- `staging`
+## Internal service flags
 
-This is a governance signal. It means the app may depend on an internal or environment-specific service.
-
-## No REST URL
-
-Some web map layers may not expose a normal REST URL. If no active widget depends on the layer, the report treats this as informational.
+Internal service detection is a governance signal. It does not automatically mean a service is broken. Review intended audience, VPN/network requirements, and sharing.

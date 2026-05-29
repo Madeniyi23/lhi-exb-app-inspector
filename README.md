@@ -2,35 +2,50 @@
 
 **LHI ExB App Inspector** is a Python-based diagnostic tool for auditing ArcGIS Experience Builder applications.
 
-It helps GIS developers, ArcGIS Online administrators, and municipal GIS teams answer practical questions such as:
+It helps GIS developers, ArcGIS Online administrators, and municipal GIS teams inspect what Experience Builder apps depend on before users discover broken widgets, inaccessible services, sharing mismatches, or internal network dependencies.
 
-- Which web maps and layers does this Experience Builder app depend on?
-- Are active widgets connected to valid web map layers?
-- Are REST services reachable and queryable?
-- Are app, web map, and layer sharing levels compatible?
-- Is the app referencing internal, dev, test, or VPN-only services?
-- Which apps need review before migration, publication, or cleanup?
-
-This is an early **v1.0-alpha / MVP** release from Lazy Hat Innovations.
+**Current status:** `v1.1 stable MVP`
 
 ---
 
-## Core capabilities
+## What it does
 
-- Single-app inspection
-- Multi-app inspection from CSV
-- App metadata scan
-- Experience Builder dependency extraction
-- Web map layer scan
-- Layer REST health check
-- Sharing compatibility check
-- Template residue detection
-- Internal service / internal host detection
-- Failed-stage reporting
-- Individual HTML reports
-- Multi-app master HTML report
-- Batch output packaging for sharing
-- Dashboard-ready CSV outputs
+The tool scans Experience Builder apps and reports on:
+
+- App metadata and sharing
+- Experience Builder widgets and data sources
+- Web map references
+- Web map layers and tables
+- Active widget dependencies
+- Template/copy residue
+- REST service health
+- Internal/dev/test service indicators
+- App/web map/layer sharing compatibility
+- Layer identity resolution
+- Failed-stage diagnostics
+- Multi-app portfolio summaries
+- Shareable batch output folders
+
+---
+
+## Pipeline
+
+The full single-app pipeline is:
+
+```text
+01 → 02 → 03 → 04 → 08 → 05
+```
+
+| Script | Purpose |
+|---|---|
+| `01_scan_exb_app_metadata.py` | Reads Experience Builder item metadata and config JSON |
+| `02_extract_exb_dependencies.py` | Extracts widgets, data sources, dependencies, and web map references |
+| `03_scan_webmap_layers.py` | Reads referenced web maps and resolves active layers vs template residue |
+| `04_check_layer_health.py` | Tests REST endpoints, query support, response behavior, and internal host patterns |
+| `08_resolve_layer_identity.py` | Resolves exact layer identity by item ID, service URL, title, owner, and authoritative candidates |
+| `05_check_sharing_compatibility.py` | Checks sharing/access compatibility and creates individual HTML reports |
+| `06_run_full_exb_inspection.py` | Runs the full pipeline for one app |
+| `07_run_multi_exb_inspection.py` | Runs the full pipeline for many apps and creates a packaged master report |
 
 ---
 
@@ -38,19 +53,17 @@ This is an early **v1.0-alpha / MVP** release from Lazy Hat Innovations.
 
 ### 1. Install requirements
 
-Use an ArcGIS Pro Python environment or another environment with the ArcGIS API for Python installed.
-
 ```bat
 pip install -r requirements.txt
 ```
 
-If using ArcGIS Pro, you may already have `arcgis` available in the `arcgispro-py3` environment.
+If using ArcGIS Pro, run from the `arcgispro-py3` environment.
 
 ---
 
-### 2. Prepare an app list
+### 2. Prepare an input CSV
 
-Create a CSV like this:
+Example:
 
 ```csv
 app_item_id,notes
@@ -58,7 +71,7 @@ app_item_id,notes
 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,Another app
 ```
 
-A starter file is included here:
+A starter file is included:
 
 ```text
 examples/input_apps_template.csv
@@ -66,7 +79,7 @@ examples/input_apps_template.csv
 
 ---
 
-### 3. Run a single app inspection
+### 3. Run a single app scan
 
 ```bat
 python 06_run_full_exb_inspection.py ^
@@ -74,9 +87,7 @@ python 06_run_full_exb_inspection.py ^
   --item-id "YOUR_EXB_APP_ITEM_ID"
 ```
 
-The script will ask for your ArcGIS username and password once.
-
-You can also provide the username:
+Or provide the username:
 
 ```bat
 python 06_run_full_exb_inspection.py ^
@@ -85,9 +96,11 @@ python 06_run_full_exb_inspection.py ^
   --username "YOUR_USERNAME"
 ```
 
+The password is requested securely through `getpass`.
+
 ---
 
-### 4. Run a multi-app inspection
+### 4. Run a multi-app scan
 
 ```bat
 python 07_run_multi_exb_inspection.py ^
@@ -95,7 +108,13 @@ python 07_run_multi_exb_inspection.py ^
   --apps-csv "examples/input_apps_template.csv"
 ```
 
-At the end, open the packaged master report:
+The packaged output will be created here:
+
+```text
+outputs/batches/<batch_id>/
+```
+
+Open:
 
 ```text
 outputs/batches/<batch_id>/master/exb_app_inspector_master_report.html
@@ -103,18 +122,9 @@ outputs/batches/<batch_id>/master/exb_app_inspector_master_report.html
 
 ---
 
-## Output structure
+## Packaged batch output
 
-The tool writes standard outputs to:
-
-```text
-outputs/csv/
-outputs/logs/
-outputs/reports/
-outputs/multi_app/
-```
-
-Script 07 also creates a clean packaged batch folder:
+Each batch contains:
 
 ```text
 outputs/batches/<batch_id>/
@@ -126,61 +136,89 @@ outputs/batches/<batch_id>/
 │       ├── individual_report.html
 │       ├── sharing_summary.csv
 │       ├── sharing_recommendations.csv
-│       └── app_scan.log
+│       ├── layer_identity_summary.csv
+│       ├── layer_identity_resolution.csv
+│       ├── app_scan.log
+│       └── logs/
 └── logs/
     └── run_multi_exb_inspection.log
 ```
 
-This packaged batch folder is the easiest output to zip, archive, or share.
+This folder is the easiest output to zip, archive, or share.
 
 ---
 
-## Script overview
+## Key finding types
 
-| Script | Purpose |
-|---|---|
-| `01_scan_exb_app_metadata.py` | Reads Experience Builder item metadata and config JSON |
-| `02_extract_exb_dependencies.py` | Extracts widgets, data sources, dependencies, and web map references |
-| `03_scan_webmap_layers.py` | Reads referenced web maps and resolves active layers vs template residue |
-| `04_check_layer_health.py` | Tests REST endpoints, query support, response time, and internal host patterns |
-| `05_check_sharing_compatibility.py` | Compares app/web map/layer sharing and produces individual HTML reports |
-| `06_run_full_exb_inspection.py` | Runs Scripts 01–05 for one app |
-| `07_run_multi_exb_inspection.py` | Runs Script 06 for many apps and creates a packaged master report |
+The inspector can identify:
 
----
-
-## Important notes
-
-- Do not commit real `outputs/` folders if they contain internal URLs, app names, service URLs, or organizational data.
-- Passwords are not written to disk. The runner prompts once and passes the password through a temporary environment variable for child scripts.
-- The tool does not permanently modify ArcGIS Online, Enterprise, web maps, layers, or Experience Builder apps. It is read-only.
-- Internal host detection is a governance signal, not proof of a broken service. Review the app audience, network/VPN requirements, and service sharing before making changes.
+- Active widget dependencies tied to inaccessible layers
+- Public web maps referencing internal services
+- App/web map/layer sharing mismatch
+- Internal or VPN-only service references
+- Ambiguous same-title authoritative layer candidates
+- URL-only ArcGIS Server layers without portal item matches
+- Template residue copied from old app templates
+- Failed stage and exact error message for troubleshooting
 
 ---
 
-## Typical findings
+## Internal service detection
 
-The tool can help identify:
+The classifier distinguishes real internal/environment indicators from ordinary business terms.
 
-- Apps with missing or inaccessible REST services
-- Public web maps referencing internal service URLs
-- Active widgets pointing to unavailable layers
-- Harmless copied-template residue
-- Apps that work for some users but not others due to sharing or network access
-- Apps that need deeper migration or cleanup review
+It flags patterns such as:
+
+```text
+itvpgisappint
+General_Int
+internal
+appint
+gisappint
+arcgisint
+/dev/
+test-server
+/uat/
+staging
+sandbox
+```
+
+It avoids false positives from normal business words such as:
+
+```text
+Development
+Development Applications
+Development Planning
+```
+
+---
+
+## Security notes
+
+Do not commit real outputs if they contain:
+
+- Internal service URLs
+- App names
+- Layer names
+- Item IDs
+- Organization-specific metadata
+- Logs
+- Raw JSON files
+
+The `.gitignore` excludes outputs and common sensitive/local files by default.
 
 ---
 
 ## Roadmap
 
-Planned next features:
+Planned next phases:
 
-- Script 08: Layer Identity Resolver
-- Script 09: Org-wide Experience Builder app discovery
-- Script 10: AGOL dashboard export table
-- Performance scoring improvements
+- Org-wide Experience Builder discovery
+- AGOL dashboard export table
+- Performance scoring
 - User/group access comparison
-- Cleaner CLI packaging
+- HTML identity detail sections
+- CLI polish and installer-friendly packaging
 
 ---
 

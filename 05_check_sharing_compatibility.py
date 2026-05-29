@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 05: Sharing Compatibility Checker v0.8.2 + Interactive HTML Report
+Script 05: Sharing Compatibility Checker v0.8.6 + Interactive HTML Report
 
 Purpose:
 - Combine outputs from Scripts 01, 03, and 04
@@ -27,11 +27,13 @@ import argparse
 import csv
 import html
 import logging
+import re
 import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 # -----------------------------------------------------------------------------
@@ -202,19 +204,29 @@ def normalize_url(url: str) -> str:
 
 def classify_service_host_from_url(url: str) -> Tuple[str, bool, str]:
     """
-    Fallback host classifier for older Script 04 outputs that do not yet contain
-    internal_service_detected fields.
+    Fallback host classifier for service URL identity/sharing checks.
+
+    Refinement:
+    - Does NOT flag ordinary business words like "Development" or "Development Applications".
+    - Flags environment indicators only when they appear as clear host/path tokens,
+      such as /dev/, gis-dev, dev-gis, _dev_, test-server, /uat/, /staging/.
+    - Strong internal indicators such as appint, gisappint, General_Int, _int, and internal
+      are still flagged.
     """
     if not url:
         return "", False, ""
 
-    parsed = __import__("urllib.parse").parse.urlparse(url)
+    parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
     path = (parsed.path or "").lower()
 
     reasons: List[str] = []
 
-    host_patterns = [
+    def add(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    strong_host_patterns = [
         ("localhost", "localhost host"),
         ("127.0.0.1", "loopback host"),
         ("intranet", "intranet host"),
@@ -222,32 +234,43 @@ def classify_service_host_from_url(url: str) -> Tuple[str, bool, str]:
         ("appint", "internal app server host pattern"),
         ("gisappint", "internal GIS app server host pattern"),
         ("arcgisint", "internal ArcGIS host pattern"),
-        ("dev", "development host pattern"),
-        ("test", "test host pattern"),
-        ("staging", "staging host pattern"),
-        ("uat", "UAT host pattern"),
     ]
 
-    path_patterns = [
+    for pattern, reason in strong_host_patterns:
+        if pattern in host:
+            add(reason)
+
+    strong_path_patterns = [
+        ("general_int", "internal General_Int service folder"),
         ("_int", "internal service path pattern"),
         ("/int/", "internal path segment"),
-        ("general_int", "internal General_Int service folder"),
+        ("/internal/", "internal service path"),
         ("internal", "internal service path"),
-        ("dev", "development service path"),
-        ("test", "test service path"),
-        ("staging", "staging service path"),
-        ("uat", "UAT service path"),
     ]
 
-    for pattern, reason in host_patterns:
-        if pattern in host:
-            reasons.append(reason)
-
-    for pattern, reason in path_patterns:
+    for pattern, reason in strong_path_patterns:
         if pattern in path:
-            reasons.append(reason)
+            add(reason)
 
-    return host, bool(reasons), "; ".join(sorted(set(reasons)))
+    host_tokens = [token for token in re.split(r"[^a-z0-9]+", host) if token]
+    path_tokens = [token for token in re.split(r"[^a-z0-9]+", path) if token]
+
+    environment_tokens = {
+        "dev": "development environment token",
+        "test": "test environment token",
+        "staging": "staging environment token",
+        "stage": "staging environment token",
+        "uat": "UAT environment token",
+        "qa": "QA environment token",
+        "sandbox": "sandbox environment token",
+    }
+
+    for token in host_tokens + path_tokens:
+        reason = environment_tokens.get(token)
+        if reason:
+            add(reason)
+
+    return host, bool(reasons), "; ".join(sorted(reasons))
 
 
 def normalize_id(value: str) -> str:
@@ -270,6 +293,10 @@ def access_rank(access: str) -> int:
     if access == "public":
         return 3
     return 0
+
+
+def is_public_access(access: str) -> bool:
+    return (access or "").strip().lower() == "public"
 
 
 # -----------------------------------------------------------------------------

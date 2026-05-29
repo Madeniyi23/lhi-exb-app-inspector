@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 07: Multi-App Inspection Runner v0.9
+Script 07: Multi-App Inspection Runner v1.1.1
 
 Purpose:
 - Read a CSV list of Experience Builder apps
@@ -10,6 +10,8 @@ Purpose:
 - Produce a master CSV and richer self-contained master HTML report across all scanned apps
 - Capture failed stage and error message from Script 06 child runs
 - Package each batch into outputs/batches/<batch_id> for easier sharing and archiving
+- Capture and package Script 08 layer identity outputs
+- Package all child stage logs created during each app scan
 
 Required input CSV columns:
 - app_item_id OR app_url
@@ -88,10 +90,17 @@ class MultiAppMasterRow:
     failed_stage_code: str
     failed_stage_name: str
     error_message: str
+    layer_identity_summary_csv: str
+    layer_identity_resolution_csv: str
+    identity_total_layers: str
+    identity_no_portal_item_match: str
+    identity_internal_service_count: str
+    identity_needs_manual_review_count: str
     sharing_summary_csv: str
     sharing_recommendations_csv: str
     html_report_path: str
     log_file: str
+    child_stage_logs: str
     notes: str
 
 
@@ -372,6 +381,26 @@ def run_script06_for_app(
     }
 
 
+def get_new_log_files_since(start: float) -> List[Path]:
+    """
+    Returns all log files created/modified since an app scan started.
+    This captures child-stage logs such as:
+    - scan_exb_app_metadata_*.log
+    - extract_exb_dependencies_*.log
+    - scan_webmap_layers_*.log
+    - check_layer_health_*.log
+    - resolve_layer_identity_*.log
+    - check_sharing_compatibility_*.log
+    - run_full_exb_inspection_*.log
+    """
+    return list_new_files(LOG_DIR, "*.log", since=start)
+
+
+def join_paths(paths: List[Path]) -> str:
+    return "; ".join(relative_or_string(path) for path in paths if path)
+
+
+
 def build_master_row_from_outputs(
     app_info: Dict[str, str],
     batch_id: str,
@@ -382,9 +411,13 @@ def build_master_row_from_outputs(
     sharing_summary = latest_file(CSV_DIR, "sharing_compatibility_summary_*.csv", since=start)
     sharing_recs = latest_file(CSV_DIR, "sharing_compatibility_recommendations_*.csv", since=start)
     html_report = latest_file(REPORTS_DIR, "sharing_compatibility_report_*.html", since=start)
+    identity_summary = latest_file(CSV_DIR, "layer_identity_summary_*.csv", since=start)
+    identity_resolution = latest_file(CSV_DIR, "layer_identity_resolution_*.csv", since=start)
     pipeline_log = latest_file(LOG_DIR, "run_full_exb_inspection_*.log", since=start)
+    child_logs = get_new_log_files_since(start)
 
     summary_row = read_first_csv_row(sharing_summary)
+    identity_row = read_first_csv_row(identity_summary)
 
     scan_ok = scan_result["returncode"] == 0 and bool(summary_row)
     scan_status = "success" if scan_ok else "failed"
@@ -414,10 +447,17 @@ def build_master_row_from_outputs(
         failed_stage_code=scan_result.get("failed_stage_code", ""),
         failed_stage_name=scan_result.get("failed_stage_name", ""),
         error_message=scan_result.get("error", ""),
+        layer_identity_summary_csv=relative_or_string(identity_summary),
+        layer_identity_resolution_csv=relative_or_string(identity_resolution),
+        identity_total_layers=identity_row.get("total_layers", ""),
+        identity_no_portal_item_match=identity_row.get("no_portal_item_match", ""),
+        identity_internal_service_count=identity_row.get("internal_service_count", ""),
+        identity_needs_manual_review_count=identity_row.get("needs_manual_review_count", ""),
         sharing_summary_csv=relative_or_string(sharing_summary),
         sharing_recommendations_csv=relative_or_string(sharing_recs),
         html_report_path=relative_or_string(html_report),
         log_file=relative_or_string(pipeline_log),
+        child_stage_logs=join_paths(child_logs),
         notes=app_info.get("notes", ""),
     )
 
@@ -470,6 +510,9 @@ def generate_master_html(rows: List[MultiAppMasterRow], output_path: Path, batch
     total_broken = sum(to_int(r.possible_broken_dependency_count) for r in rows)
     total_template_residue = sum(to_int(r.template_residue_dependency_count) for r in rows)
     total_active_deps = sum(to_int(r.active_dependency_count) for r in rows)
+    total_identity_no_match = sum(to_int(r.identity_no_portal_item_match) for r in rows)
+    total_identity_internal = sum(to_int(r.identity_internal_service_count) for r in rows)
+    total_identity_manual = sum(to_int(r.identity_needs_manual_review_count) for r in rows)
 
     def esc(value: Any) -> str:
         return html.escape(safe_str(value))
@@ -541,10 +584,11 @@ def generate_master_html(rows: List[MultiAppMasterRow], output_path: Path, batch
           <td>{esc(row.inaccessible_layer_count)}</td>
           <td>{esc(row.possible_broken_dependency_count)}</td>
           <td>{esc(row.template_residue_dependency_count)}</td>
+          <td>{esc(row.identity_needs_manual_review_count)}</td>
           <td>{report_link}</td>
         </tr>
         <tr id="{detail_id}" class="detail-row" style="display:none;">
-          <td colspan="13">
+          <td colspan="14">
             <div class="detail-panel">
               <div class="detail-grid">
                 <div>
@@ -560,12 +604,16 @@ def generate_master_html(rows: List[MultiAppMasterRow], output_path: Path, batch
                   <p><strong>Active dependencies:</strong> {esc(row.active_dependency_count)} across {esc(row.active_dependency_layer_count)} layer(s)</p>
                   <p><strong>Template residue:</strong> {esc(row.template_residue_dependency_count)}</p>
                   <p><strong>Possible broken dependencies:</strong> {esc(row.possible_broken_dependency_count)}</p>
+                  <p><strong>Identity manual review:</strong> {esc(row.identity_needs_manual_review_count)}</p>
+                  <p><strong>Internal service references:</strong> {esc(row.identity_internal_service_count)}</p>
                 </div>
                 <div>
                   <h4>Output links</h4>
                   <p>{report_link}</p>
                   <p class="small"><strong>Summary CSV:</strong> {esc(row.sharing_summary_csv)}</p>
-                  <p class="small"><strong>Log:</strong> {esc(row.log_file)}</p>
+                  <p class="small"><strong>Layer identity CSV:</strong> {esc(row.layer_identity_resolution_csv)}</p>
+                  <p class="small"><strong>Main app log:</strong> {esc(row.log_file)}</p>
+                  <p class="small"><strong>Child stage logs:</strong> {esc(row.child_stage_logs)}</p>
                 </div>
               </div>
               <div class="notes">
@@ -778,6 +826,9 @@ th {{
       <div class="card {broken_card_class}"><div class="card-title">Broken Dependencies</div><div class="card-value">{total_broken}</div><div class="card-subtitle">Active dependency risk</div></div>
       <div class="card neutral"><div class="card-title">Active Dependencies</div><div class="card-value">{total_active_deps}</div><div class="card-subtitle">Resolved widget dependencies</div></div>
       <div class="card review"><div class="card-title">Template Residue</div><div class="card-value">{total_template_residue}</div><div class="card-subtitle">Maintenance notes</div></div>
+      <div class="card neutral"><div class="card-title">Identity No Match</div><div class="card-value">{total_identity_no_match}</div><div class="card-subtitle">No clear portal item</div></div>
+      <div class="card review"><div class="card-title">Internal Services</div><div class="card-value">{total_identity_internal}</div><div class="card-subtitle">Identity resolver</div></div>
+      <div class="card review"><div class="card-title">Manual Identity Review</div><div class="card-value">{total_identity_manual}</div><div class="card-subtitle">Layer identity checks</div></div>
     </div>
   </section>
 
@@ -821,6 +872,7 @@ th {{
           <th>Inaccessible</th>
           <th>Broken Deps</th>
           <th>Template Residue</th>
+          <th>Identity Review</th>
           <th>Report</th>
         </tr>
       </thead>
@@ -916,6 +968,32 @@ def copy_file_if_exists(source_text: str, destination: Path) -> str:
     return relative_or_string(destination)
 
 
+def copy_child_logs(child_logs_text: str, destination_dir: Path) -> str:
+    """
+    Copies semicolon-delimited log paths into an app-specific logs folder.
+    Returns semicolon-delimited packaged paths.
+    """
+    if not child_logs_text:
+        return ""
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    copied: List[str] = []
+
+    for raw in child_logs_text.split(";"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        source = resolve_existing_path(raw)
+        if not source:
+            continue
+        dest = destination_dir / source.name
+        shutil.copy2(source, dest)
+        copied.append(relative_or_string(dest))
+
+    return "; ".join(copied)
+
+
+
 def package_batch_outputs(
     rows: List[MultiAppMasterRow],
     master_csv: Path,
@@ -959,7 +1037,10 @@ def package_batch_outputs(
         new_html = copy_file_if_exists(row.html_report_path, app_dir / "individual_report.html")
         new_summary = copy_file_if_exists(row.sharing_summary_csv, app_dir / "sharing_summary.csv")
         new_recs = copy_file_if_exists(row.sharing_recommendations_csv, app_dir / "sharing_recommendations.csv")
+        new_identity_summary = copy_file_if_exists(row.layer_identity_summary_csv, app_dir / "layer_identity_summary.csv")
+        new_identity_resolution = copy_file_if_exists(row.layer_identity_resolution_csv, app_dir / "layer_identity_resolution.csv")
         new_log = copy_file_if_exists(row.log_file, app_dir / "app_scan.log")
+        new_child_logs = copy_child_logs(row.child_stage_logs, app_dir / "logs")
 
         packaged_rows.append(
             replace(
@@ -967,7 +1048,10 @@ def package_batch_outputs(
                 html_report_path=new_html or row.html_report_path,
                 sharing_summary_csv=new_summary or row.sharing_summary_csv,
                 sharing_recommendations_csv=new_recs or row.sharing_recommendations_csv,
+                layer_identity_summary_csv=new_identity_summary or row.layer_identity_summary_csv,
+                layer_identity_resolution_csv=new_identity_resolution or row.layer_identity_resolution_csv,
                 log_file=new_log or row.log_file,
+                child_stage_logs=new_child_logs or row.child_stage_logs,
             )
         )
 
@@ -1132,10 +1216,17 @@ def main() -> int:
                         failed_stage_code="",
                         failed_stage_name="row/setup",
                         error_message=str(app_exc),
+                        layer_identity_summary_csv="",
+                        layer_identity_resolution_csv="",
+                        identity_total_layers="",
+                        identity_no_portal_item_match="",
+                        identity_internal_service_count="",
+                        identity_needs_manual_review_count="",
                         sharing_summary_csv="",
                         sharing_recommendations_csv="",
                         html_report_path="",
                         log_file="",
+                        child_stage_logs="",
                         notes=fallback_info["notes"],
                     )
                 )
