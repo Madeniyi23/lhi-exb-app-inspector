@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 05: Sharing Compatibility Checker v0.8.6 + Interactive HTML Report
+Script 05: Sharing Compatibility Checker v0.8.7 + Interactive HTML Report
 
 Purpose:
 - Combine outputs from Scripts 01, 03, and 04
@@ -29,7 +29,7 @@ import html
 import logging
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -178,18 +178,33 @@ def read_csv_dicts(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def write_csv(path: Path, rows: List[Any]) -> None:
-    if not rows:
-        logging.warning("No rows to write for: %s", path)
-        return
+def dataclass_fieldnames(row_type: Any) -> List[str]:
+    return [field.name for field in fields(row_type)]
+
+
+def write_csv(path: Path, rows: List[Any], fieldnames: Optional[List[str]] = None) -> None:
+    """
+    Writes CSV output even when rows are empty.
+
+    This keeps the pipeline stable for valid non-map Experience Builder apps,
+    where sharing detail rows may be zero but downstream runners still expect
+    sharing_compatibility_details_*.csv to exist.
+    """
+    if rows:
+        fieldnames = fieldnames or list(asdict(rows[0]).keys())
+    elif not fieldnames:
+        raise ValueError(f"No rows and no fieldnames supplied for CSV: {path}")
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
 
-    logging.info("CSV written: %s | rows: %s", path, len(rows))
+    if rows:
+        logging.info("CSV written: %s | rows: %s", path, len(rows))
+    else:
+        logging.warning("Empty CSV written with headers only: %s", path)
 
 
 def first_row(rows: List[Dict[str, str]], name: str) -> Dict[str, str]:
@@ -1177,9 +1192,9 @@ def main() -> int:
         recommendations_csv = CSV_DIR / f"sharing_compatibility_recommendations_{output_prefix}_{timestamp}.csv"
         report_html = REPORT_DIR / f"sharing_compatibility_report_{output_prefix}_{timestamp}.html"
 
-        write_csv(summary_csv, [summary_row])
-        write_csv(details_csv, detail_rows)
-        write_csv(recommendations_csv, recommendation_rows)
+        write_csv(summary_csv, [summary_row], dataclass_fieldnames(SharingCompatibilitySummaryRow))
+        write_csv(details_csv, detail_rows, dataclass_fieldnames(SharingCompatibilityDetailRow))
+        write_csv(recommendations_csv, recommendation_rows, dataclass_fieldnames(SharingRecommendationRow))
         write_html_report(report_html, summary_row, detail_rows, recommendation_rows)
 
         print("\n=== LHI ExB App Inspector: Script 05 Complete ===")

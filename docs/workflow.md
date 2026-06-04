@@ -16,10 +16,19 @@ Use `06_run_full_exb_inspection.py` to run this pipeline.
 ## Multi-app workflow
 
 ```text
-input_apps.csv
-→ 07_run_multi_exb_inspection.py
+09_discover_exb_apps
+→ input_apps.csv
+→ 07_run_multi_exb_inspection
 → outputs/batches/<batch_id>
 ```
+
+## Recommended batch process
+
+1. Use Script 09 to discover operational apps.
+2. Start with `--limit 50`.
+3. Run Script 07 against the generated input CSV.
+4. Review failures, critical apps, and internal service risks.
+5. Increase to 100+ apps after the 50-app test is stable.
 
 ## Recommended review order
 

@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 01: Scan Experience Builder App Metadata
+Script 01: Scan Experience Builder App Metadata v1.1.2
 
 Purpose:
 - Connect to ArcGIS Online or ArcGIS Enterprise
@@ -8,6 +8,13 @@ Purpose:
 - Export app metadata to CSV
 - Save the raw app item data/config JSON for later dependency inspection
 - Create a scan log for troubleshooting
+
+v1.1.2 update:
+- Fully REST-first.
+- Avoids ArcGIS API login/session/item hydration for Stage 01.
+- Generates Portal token directly via /sharing/rest/generateToken when username/password are provided.
+- Reads LHI_ARCGIS_PASSWORD from environment when launched by Script 06/07.
+- Uses request timeouts for metadata and config retrieval.
 
 Author: Lazy Hat Innovations
 """
@@ -27,26 +34,16 @@ from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-try:
-    from arcgis.gis import GIS
-except ImportError:
-    GIS = None
+import requests
 
-
-# -----------------------------------------------------------------------------
-# Defaults
-# -----------------------------------------------------------------------------
 
 DEFAULT_PORTAL = "https://www.arcgis.com"
+SCRIPT_VERSION = "1.1.2"
 OUTPUT_ROOT = Path("outputs")
 RAW_JSON_DIR = OUTPUT_ROOT / "raw_json"
 CSV_DIR = OUTPUT_ROOT / "csv"
 LOG_DIR = OUTPUT_ROOT / "logs"
 
-
-# -----------------------------------------------------------------------------
-# Data models
-# -----------------------------------------------------------------------------
 
 @dataclass
 class AppMetadata:
@@ -79,10 +76,6 @@ class AppMetadata:
     issue_summary: str
 
 
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-
 def setup_output_dirs() -> None:
     for folder in [OUTPUT_ROOT, RAW_JSON_DIR, CSV_DIR, LOG_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -105,10 +98,10 @@ def setup_logging() -> Path:
 
 
 def utc_from_esri_millis(value: Optional[int]) -> str:
-    if value is None:
+    if value in [None, ""]:
         return ""
     try:
-        return dt.fromtimestamp(value / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return dt.fromtimestamp(float(value) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return ""
 
@@ -126,20 +119,11 @@ def safe_join(values: Any) -> str:
 
 
 def sanitize_filename(value: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9_\-]+", "_", value.strip())
+    value = re.sub(r"[^A-Za-z0-9_\-]+", "_", (value or "").strip())
     return value[:120] if value else "untitled"
 
 
 def extract_item_id(value: str) -> str:
-    """
-    Accepts either a raw ArcGIS item ID or an Experience Builder URL.
-
-    Supported examples:
-    - abcdef1234567890abcdef1234567890
-    - https://experience.arcgis.com/experience/abcdef1234567890abcdef1234567890
-    - https://experience.arcgis.com/builder/?id=abcdef1234567890abcdef1234567890
-    - https://www.arcgis.com/home/item.html?id=abcdef1234567890abcdef1234567890
-    """
     value = value.strip()
 
     raw_id_match = re.fullmatch(r"[a-fA-F0-9]{32}", value)
@@ -157,61 +141,124 @@ def extract_item_id(value: str) -> str:
         if match:
             return match.group(1)
 
-    raise ValueError(
-        "Could not extract a valid 32-character ArcGIS item ID from the value provided."
-    )
+    raise ValueError("Could not extract a valid 32-character ArcGIS item ID from the value provided.")
 
 
 def infer_portal_from_url(value: str, fallback_portal: str = DEFAULT_PORTAL) -> str:
-    """
-    Best-effort portal inference.
-
-    For MVP, we default to ArcGIS Online unless the user supplies --portal.
-    This function mainly helps when the pasted URL clearly belongs to a portal domain.
-    """
     value = value.strip()
     if not value.lower().startswith(("http://", "https://")):
         return fallback_portal
-
-    # Public Experience Builder AGOL apps often use experience.arcgis.com.
-    # The actual portal may still be ArcGIS Online, so use fallback.
     if "experience.arcgis.com" in value.lower():
         return fallback_portal
-
-    # Common ArcGIS Online item URL.
     if "arcgis.com/home/item.html" in value.lower():
         return "https://www.arcgis.com"
-
     return fallback_portal
 
 
-def get_sharing_flags(item: Any) -> Tuple[bool, bool]:
-    access = getattr(item, "access", "") or ""
-    is_public = access.lower() == "public"
-    is_org_shared = access.lower() in {"org", "public"}
-    return is_public, is_org_shared
+def sharing_rest_url(portal_url: str) -> str:
+    portal = (portal_url or DEFAULT_PORTAL).rstrip("/")
+    if portal.lower().endswith("/sharing/rest"):
+        return portal
+    return f"{portal}/sharing/rest"
 
 
-def get_group_titles(item: Any) -> str:
-    try:
-        groups = item.shared_with.get("groups", []) if item.shared_with else []
-        titles = []
-        for group in groups:
-            if isinstance(group, dict):
-                titles.append(group.get("title", ""))
-            else:
-                titles.append(getattr(group, "title", ""))
-        return "; ".join(t for t in titles if t)
-    except Exception:
+def rest_json_get(url: str, params: Dict[str, Any], timeout: int) -> Dict[str, Any]:
+    logging.info("REST GET: %s", url)
+    response = requests.get(url, params=params, timeout=timeout)
+    response.raise_for_status()
+
+    payload = response.json()
+    if isinstance(payload, dict) and "error" in payload:
+        err = payload.get("error") or {}
+        message = err.get("message", "Unknown REST error") if isinstance(err, dict) else str(err)
+        details = err.get("details", []) if isinstance(err, dict) else []
+        raise RuntimeError(f"Portal REST error: {message}; details={details}")
+
+    return payload
+
+
+def rest_json_post(url: str, data: Dict[str, Any], timeout: int) -> Dict[str, Any]:
+    logging.info("REST POST: %s", url)
+    response = requests.post(url, data=data, timeout=timeout)
+    response.raise_for_status()
+
+    payload = response.json()
+    if isinstance(payload, dict) and "error" in payload:
+        err = payload.get("error") or {}
+        message = err.get("message", "Unknown REST error") if isinstance(err, dict) else str(err)
+        details = err.get("details", []) if isinstance(err, dict) else []
+        raise RuntimeError(f"Portal REST error: {message}; details={details}")
+
+    return payload
+
+
+def generate_token(portal_url: str, username: Optional[str], anonymous: bool, timeout: int) -> str:
+    if anonymous or not username:
+        logging.info("No username supplied or anonymous enabled. Running Stage 01 without token.")
         return ""
 
+    password = os.getenv("LHI_ARCGIS_PASSWORD")
+    if password:
+        logging.info("Using password from LHI_ARCGIS_PASSWORD environment variable.")
+    else:
+        password = getpass.getpass(f"Password for {username}: ")
 
-def get_group_count(item: Any) -> int:
+    url = f"{sharing_rest_url(portal_url)}/generateToken"
+    payload = {
+        "f": "json",
+        "username": username,
+        "password": password,
+        "referer": "https://www.arcgis.com",
+        "expiration": 60,
+    }
+
+    logging.info("Generating portal token for %s", username)
+    result = rest_json_post(url, payload, timeout=timeout)
+    token = result.get("token", "")
+
+    if not token:
+        raise RuntimeError("Token generation succeeded but no token was returned.")
+
+    logging.info("Portal token generated successfully.")
+    return str(token)
+
+
+def fetch_item_metadata_rest(portal_url: str, item_id: str, token: str, timeout: int) -> Dict[str, Any]:
+    url = f"{sharing_rest_url(portal_url)}/content/items/{item_id}"
+    params: Dict[str, Any] = {"f": "json"}
+    if token:
+        params["token"] = token
+
+    logging.info("Fetching item metadata via REST: %s", item_id)
+    item = rest_json_get(url, params=params, timeout=timeout)
+
+    if not item or not isinstance(item, dict):
+        raise RuntimeError(f"Item metadata was empty or invalid for item ID: {item_id}")
+
+    if not item.get("id"):
+        raise RuntimeError(f"Item not found or not accessible with current credentials: {item_id}")
+
+    return item
+
+
+def read_item_data_rest(portal_url: str, item_id: str, token: str, timeout: int) -> Tuple[Optional[Dict[str, Any]], str]:
+    url = f"{sharing_rest_url(portal_url)}/content/items/{item_id}/data"
+    params: Dict[str, Any] = {"f": "json"}
+    if token:
+        params["token"] = token
+
     try:
-        groups = item.shared_with.get("groups", []) if item.shared_with else []
-        return len(groups)
-    except Exception:
-        return 0
+        logging.info("Fetching item data/config via REST: %s", item_id)
+        data = rest_json_get(url, params=params, timeout=timeout)
+
+        if data is None:
+            return None, "Item data returned None."
+        if not isinstance(data, dict):
+            return None, f"Item data is not a JSON object. Returned type: {type(data).__name__}"
+        return data, ""
+
+    except Exception as exc:
+        return None, f"Could not read item data/config JSON via REST: {exc}"
 
 
 def detect_possible_exb_config(item_data: Optional[Dict[str, Any]]) -> bool:
@@ -228,7 +275,6 @@ def detect_possible_exb_config(item_data: Optional[Dict[str, Any]]) -> bool:
         "theme",
         "attributes",
     }
-
     return any(key in item_data for key in likely_keys)
 
 
@@ -262,60 +308,43 @@ def write_app_summary_csv(metadata: AppMetadata) -> Path:
     return output_path
 
 
-# -----------------------------------------------------------------------------
-# ArcGIS connection and scanning
-# -----------------------------------------------------------------------------
-
-def connect_to_portal(portal_url: str, username: Optional[str], anonymous: bool) -> Any:
-    if GIS is None:
-        raise ImportError(
-            "The arcgis package is not installed. Install it with: pip install arcgis"
-        )
-
-    if anonymous:
-        logging.info("Connecting anonymously to portal: %s", portal_url)
-        return GIS(portal_url)
-
-    if not username:
-        logging.info("No username supplied. Connecting anonymously to portal: %s", portal_url)
-        return GIS(portal_url)
-
-    password = os.getenv("LHI_ARCGIS_PASSWORD")
-    if not password:
-        password = getpass.getpass(f"Password for {username}: ")
-    logging.info("Connecting as %s to portal: %s", username, portal_url)
-    return GIS(portal_url, username, password)
+def get_sharing_flags(item_json: Dict[str, Any]) -> Tuple[bool, bool]:
+    access = str(item_json.get("access", "") or "").lower()
+    is_public = access == "public"
+    is_org_shared = access in {"org", "public"}
+    return is_public, is_org_shared
 
 
-def fetch_item(gis: Any, item_id: str) -> Any:
-    logging.info("Fetching item: %s", item_id)
-    item = gis.content.get(item_id)
-    if item is None:
-        raise RuntimeError(
-            f"Item not found or not accessible with the current credentials: {item_id}"
-        )
-    return item
+def get_groups(item_json: Dict[str, Any]) -> Tuple[int, str]:
+    groups = item_json.get("groups") or item_json.get("sharedWithGroups") or []
+    if not isinstance(groups, list):
+        return 0, ""
+
+    titles = []
+    for group in groups:
+        if isinstance(group, dict):
+            titles.append(str(group.get("title", "") or group.get("id", "")))
+        else:
+            titles.append(str(group))
+
+    titles = [t for t in titles if t]
+    return len(titles), "; ".join(titles)
 
 
-def read_item_data(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
-    try:
-        data = item.get_data()
-        if data is None:
-            return None, "Item data returned None."
-        if not isinstance(data, dict):
-            return None, f"Item data is not a JSON object. Returned type: {type(data).__name__}"
-        return data, ""
-    except Exception as exc:
-        return None, f"Could not read item data/config JSON: {exc}"
-
-
-def scan_app_metadata(portal_url: str, item: Any, item_data: Optional[Dict[str, Any]], raw_json_path: Path, data_issue: str) -> AppMetadata:
-    is_public, is_org_shared = get_sharing_flags(item)
+def scan_app_metadata(
+    portal_url: str,
+    item_json: Dict[str, Any],
+    item_data: Optional[Dict[str, Any]],
+    raw_json_path: Path,
+    data_issue: str,
+) -> AppMetadata:
+    is_public, is_org_shared = get_sharing_flags(item_json)
+    group_count, groups = get_groups(item_json)
     possible_exb_config = detect_possible_exb_config(item_data)
     item_data_readable = isinstance(item_data, dict)
+    item_type = item_json.get("type", "") or ""
 
     issues = []
-    item_type = getattr(item, "type", "") or ""
 
     if "Experience" not in item_type and "Web Experience" not in item_type:
         issues.append(f"Item type is '{item_type}', which may not be an Experience Builder app.")
@@ -326,32 +355,32 @@ def scan_app_metadata(portal_url: str, item: Any, item_data: Optional[Dict[str, 
     if item_data_readable and not possible_exb_config:
         issues.append("Item data was readable, but it does not look like a standard Experience Builder config.")
 
-    if not getattr(item, "url", None):
+    if not item_json.get("url"):
         issues.append("Item URL is empty or unavailable.")
 
     return AppMetadata(
         scan_timestamp_utc=now_utc_string(),
         portal_url=portal_url,
-        app_item_id=getattr(item, "id", "") or "",
-        title=getattr(item, "title", "") or "",
+        app_item_id=item_json.get("id", "") or "",
+        title=item_json.get("title", "") or "",
         item_type=item_type,
-        owner=getattr(item, "owner", "") or "",
-        created_utc=utc_from_esri_millis(getattr(item, "created", None)),
-        modified_utc=utc_from_esri_millis(getattr(item, "modified", None)),
-        access=getattr(item, "access", "") or "",
+        owner=item_json.get("owner", "") or "",
+        created_utc=utc_from_esri_millis(item_json.get("created")),
+        modified_utc=utc_from_esri_millis(item_json.get("modified")),
+        access=item_json.get("access", "") or "",
         is_public=is_public,
         is_org_shared=is_org_shared,
-        group_count=get_group_count(item),
-        groups=get_group_titles(item),
-        num_views=getattr(item, "numViews", None),
-        url=getattr(item, "url", "") or "",
-        homepage=getattr(item, "homepage", "") or "",
-        size=getattr(item, "size", None),
-        type_keywords=safe_join(getattr(item, "typeKeywords", [])),
-        tags=safe_join(getattr(item, "tags", [])),
-        description_present=bool(getattr(item, "description", None)),
-        snippet_present=bool(getattr(item, "snippet", None)),
-        license_info_present=bool(getattr(item, "licenseInfo", None)),
+        group_count=group_count,
+        groups=groups,
+        num_views=item_json.get("numViews"),
+        url=item_json.get("url", "") or "",
+        homepage=item_json.get("homepage", "") or "",
+        size=item_json.get("size"),
+        type_keywords=safe_join(item_json.get("typeKeywords", [])),
+        tags=safe_join(item_json.get("tags", [])),
+        description_present=bool(item_json.get("description")),
+        snippet_present=bool(item_json.get("snippet")),
+        license_info_present=bool(item_json.get("licenseInfo")),
         item_data_readable=item_data_readable,
         item_data_top_level_keys=compact_top_level_keys(item_data),
         possible_exb_config=possible_exb_config,
@@ -360,24 +389,14 @@ def scan_app_metadata(portal_url: str, item: Any, item_data: Optional[Dict[str, 
     )
 
 
-# -----------------------------------------------------------------------------
-# CLI
-# -----------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Scan an ArcGIS Experience Builder app item and export metadata/config JSON."
     )
 
     input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        "--app-url",
-        help="Experience Builder app URL or ArcGIS item URL.",
-    )
-    input_group.add_argument(
-        "--item-id",
-        help="32-character ArcGIS item ID for the Experience Builder app.",
-    )
+    input_group.add_argument("--app-url", help="Experience Builder app URL or ArcGIS item URL.")
+    input_group.add_argument("--item-id", help="32-character ArcGIS item ID for the Experience Builder app.")
 
     parser.add_argument(
         "--portal",
@@ -394,6 +413,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Force anonymous scan even if username is omitted.",
     )
+    parser.add_argument(
+        "--rest-timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for Script 01 Portal REST token/metadata/data requests. Default: 60.",
+    )
 
     return parser.parse_args()
 
@@ -407,26 +432,43 @@ def main() -> int:
         app_item_id = extract_item_id(input_value)
         portal_url = args.portal or infer_portal_from_url(input_value, DEFAULT_PORTAL)
 
-        logging.info("Starting LHI ExB App Inspector - Script 01")
+        logging.info("Starting LHI ExB App Inspector - Script 01 v%s", SCRIPT_VERSION)
         logging.info("Resolved portal URL: %s", portal_url)
         logging.info("Resolved app item ID: %s", app_item_id)
 
-        gis = connect_to_portal(
+        token = generate_token(
             portal_url=portal_url,
             username=args.username,
             anonymous=args.anonymous,
+            timeout=args.rest_timeout,
         )
 
-        item = fetch_item(gis, app_item_id)
-        logging.info("Item found: %s | Type: %s | Owner: %s", item.title, item.type, item.owner)
+        item_json = fetch_item_metadata_rest(
+            portal_url=portal_url,
+            item_id=app_item_id,
+            token=token,
+            timeout=args.rest_timeout,
+        )
+        logging.info(
+            "Item found via REST: %s | Type: %s | Owner: %s",
+            item_json.get("title", ""),
+            item_json.get("type", ""),
+            item_json.get("owner", ""),
+        )
 
-        item_data, data_issue = read_item_data(item)
-        raw_json_path = save_raw_json(app_item_id, getattr(item, "title", "untitled"), item_data)
+        item_data, data_issue = read_item_data_rest(
+            portal_url=portal_url,
+            item_id=app_item_id,
+            token=token,
+            timeout=args.rest_timeout,
+        )
+
+        raw_json_path = save_raw_json(app_item_id, item_json.get("title", "untitled"), item_data)
         logging.info("Raw item data saved to: %s", raw_json_path)
 
         metadata = scan_app_metadata(
             portal_url=portal_url,
-            item=item,
+            item_json=item_json,
             item_data=item_data,
             raw_json_path=raw_json_path,
             data_issue=data_issue,
@@ -435,7 +477,7 @@ def main() -> int:
         csv_path = write_app_summary_csv(metadata)
         logging.info("App summary CSV saved to: %s", csv_path)
 
-        print("\n=== LHI ExB App Inspector: Script 01 Complete ===")
+        print(f"\n=== LHI ExB App Inspector: Script 01 v{SCRIPT_VERSION} Complete ===")
         print(f"App title: {metadata.title}")
         print(f"Item ID: {metadata.app_item_id}")
         print(f"Type: {metadata.item_type}")

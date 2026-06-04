@@ -31,6 +31,21 @@ logs/
 
 The `logs/` folder contains child-stage logs created during the scan.
 
-## Internal service flags
+## Stage timeout behavior
 
-Internal service detection is a governance signal. It does not automatically mean a service is broken. Review intended audience, VPN/network requirements, and sharing.
+Script 06 enforces hard stage-level timeouts. If one app hangs, it should be marked failed/timed out and Script 07 should continue to the next app.
+
+Default stage timeouts:
+
+```text
+Stage 01: 180 seconds
+Stage 02: 240 seconds
+Stage 03: 300 seconds
+Stage 04: 420 seconds
+Stage 08: 420 seconds
+Stage 05: 300 seconds
+```
+
+## Non-map apps
+
+Some valid Experience Builder apps have no web maps, no data sources, or no layers. The pipeline now writes empty CSV files with headers and continues.

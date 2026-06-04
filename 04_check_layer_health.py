@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 04: Layer Health Checker v0.8.5
+Script 04: Layer Health Checker v0.8.6
 
 Purpose:
 - Read webmap_layers_*.csv from Script 03
@@ -31,7 +31,7 @@ import re
 import os
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -219,18 +219,26 @@ def read_csv_dicts(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def write_csv(path: Path, rows: List[Any]) -> None:
-    if not rows:
-        logging.warning("No rows to write for: %s", path)
-        return
+def dataclass_fieldnames(row_type: Any) -> List[str]:
+    return [field.name for field in fields(row_type)]
+
+
+def write_csv(path: Path, rows: List[Any], fieldnames: Optional[List[str]] = None) -> None:
+    if rows:
+        fieldnames = fieldnames or list(asdict(rows[0]).keys())
+    elif not fieldnames:
+        raise ValueError(f"No rows and no fieldnames supplied for CSV: {path}")
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
 
-    logging.info("CSV written: %s | rows: %s", path, len(rows))
+    if rows:
+        logging.info("CSV written: %s | rows: %s", path, len(rows))
+    else:
+        logging.warning("Empty CSV written with headers only: %s", path)
 
 
 def is_valid_url(url: str) -> bool:
@@ -1147,8 +1155,8 @@ def main() -> int:
         summary_csv = CSV_DIR / f"layer_health_summary_{output_prefix}_{timestamp}.csv"
         details_csv = CSV_DIR / f"layer_health_details_{output_prefix}_{timestamp}.csv"
 
-        write_csv(summary_csv, [summary_row])
-        write_csv(details_csv, detail_rows)
+        write_csv(summary_csv, [summary_row], dataclass_fieldnames(LayerHealthSummaryRow))
+        write_csv(details_csv, detail_rows, dataclass_fieldnames(LayerHealthDetailRow))
 
         print("\n=== LHI ExB App Inspector: Script 04 Complete ===")
         print(f"Access strategy: {summary_row.access_strategy}")

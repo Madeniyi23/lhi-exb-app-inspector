@@ -1,3 +1,3 @@
-app_item_id,notes
-7bd1b4f0533244a994c7f8c5a1bcc1db,Example Experience Builder app
-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,Another app to inspect
+app_item_id,app_name,notes
+7bd1b4f0533244a994c7f8c5a1bcc1db,Example Experience Builder app,Example app to inspect
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,Another app,Another app to inspect

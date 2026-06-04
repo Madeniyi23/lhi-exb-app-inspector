@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 02: Extract Experience Builder Dependencies
+Script 02: Extract Experience Builder Dependencies v1.1.1
 
 Purpose:
 - Read the raw Experience Builder app JSON created by Script 01
@@ -11,6 +11,7 @@ Purpose:
 - Detect missing/orphan data source references
 - Detect pending layout/widget placements
 - Export clean CSVs for the next inspection stage
+- Always write expected CSV files even when a section has zero rows
 
 Author: Lazy Hat Innovations
 """
@@ -24,7 +25,7 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -199,18 +200,33 @@ def join_values(values: Iterable[Any]) -> str:
     return "; ".join(cleaned)
 
 
-def write_csv(path: Path, rows: List[Any]) -> None:
-    if not rows:
-        logging.warning("No rows to write for: %s", path)
-        return
+def dataclass_fieldnames(row_type: Any) -> List[str]:
+    return [field.name for field in fields(row_type)]
+
+
+def write_csv(path: Path, rows: List[Any], fieldnames: Optional[List[str]] = None) -> None:
+    """
+    Writes CSV output even when rows are empty.
+
+    This is important because downstream pipeline stages look for expected
+    output filenames such as data_source_inventory_*.csv and webmap_references_*.csv.
+    Some valid ExB apps may have no dataSources or no web map references.
+    """
+    if rows:
+        fieldnames = fieldnames or list(asdict(rows[0]).keys())
+    elif not fieldnames:
+        raise ValueError(f"No rows and no fieldnames supplied for CSV: {path}")
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
 
-    logging.info("CSV written: %s | rows: %s", path, len(rows))
+    if rows:
+        logging.info("CSV written: %s | rows: %s", path, len(rows))
+    else:
+        logging.warning("Empty CSV written with headers only: %s", path)
 
 
 def get_widget_type(uri: str) -> str:
@@ -773,12 +789,12 @@ def main() -> int:
         webmaps_csv = CSV_DIR / f"webmap_references_{output_prefix}_{timestamp}.csv"
         layout_issues_csv = CSV_DIR / f"layout_issues_{output_prefix}_{timestamp}.csv"
 
-        write_csv(summary_csv, [summary_row])
-        write_csv(widgets_csv, widget_rows)
-        write_csv(data_sources_csv, data_source_rows)
-        write_csv(dependencies_csv, widget_dependency_rows)
-        write_csv(webmaps_csv, webmap_rows)
-        write_csv(layout_issues_csv, layout_issue_rows)
+        write_csv(summary_csv, [summary_row], dataclass_fieldnames(ExtractionSummaryRow))
+        write_csv(widgets_csv, widget_rows, dataclass_fieldnames(WidgetInventoryRow))
+        write_csv(data_sources_csv, data_source_rows, dataclass_fieldnames(DataSourceInventoryRow))
+        write_csv(dependencies_csv, widget_dependency_rows, dataclass_fieldnames(WidgetDataDependencyRow))
+        write_csv(webmaps_csv, webmap_rows, dataclass_fieldnames(WebMapReferenceRow))
+        write_csv(layout_issues_csv, layout_issue_rows, dataclass_fieldnames(LayoutIssueRow))
 
         print("\n=== LHI ExB App Inspector: Script 02 Complete ===")
         print(f"Input JSON: {input_path}")

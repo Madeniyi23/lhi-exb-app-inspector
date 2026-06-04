@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 03: Scan Web Map Layers
+Script 03: Scan Web Map Layers v1.1.1
 
 Purpose:
 - Read web map references exported by Script 02
@@ -31,7 +31,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -230,18 +230,32 @@ def read_csv_dicts(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def write_csv(path: Path, rows: List[Any]) -> None:
-    if not rows:
-        logging.warning("No rows to write for: %s", path)
-        return
+def dataclass_fieldnames(row_type: Any) -> List[str]:
+    return [field.name for field in fields(row_type)]
+
+
+def write_csv(path: Path, rows: List[Any], fieldnames: Optional[List[str]] = None) -> None:
+    """
+    Writes CSV output even when rows are empty.
+
+    This keeps downstream stages from failing when a valid app has no web map references,
+    no layers, no tables, or no ExB layer reference resolution rows.
+    """
+    if rows:
+        fieldnames = fieldnames or list(asdict(rows[0]).keys())
+    elif not fieldnames:
+        raise ValueError(f"No rows and no fieldnames supplied for CSV: {path}")
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
 
-    logging.info("CSV written: %s | rows: %s", path, len(rows))
+    if rows:
+        logging.info("CSV written: %s | rows: %s", path, len(rows))
+    else:
+        logging.warning("Empty CSV written with headers only: %s", path)
 
 
 def save_raw_json(prefix: str, item_id: str, data: Dict[str, Any]) -> Path:
@@ -925,10 +939,34 @@ def main() -> int:
         webmap_item_ids = extract_item_ids_from_webmap_references(webmap_ref_rows)
         webmap_data_source_ids = extract_webmap_data_source_ids(webmap_ref_rows)
 
-        if not webmap_item_ids:
-            raise RuntimeError("No web map item IDs found in webmap references CSV.")
-
         widget_dependency_rows = load_optional_widget_dependencies(widget_deps_path)
+
+        if not webmap_item_ids:
+            logging.warning("No web map item IDs found. Writing empty Stage 03 outputs and completing successfully.")
+
+            summary_csv = CSV_DIR / f"webmap_summary_{output_prefix}_{timestamp}.csv"
+            layers_csv = CSV_DIR / f"webmap_layers_{output_prefix}_{timestamp}.csv"
+            tables_csv = CSV_DIR / f"webmap_tables_{output_prefix}_{timestamp}.csv"
+            resolution_csv = CSV_DIR / f"exb_layer_reference_resolution_{output_prefix}_{timestamp}.csv"
+
+            write_csv(summary_csv, [], dataclass_fieldnames(WebMapSummaryRow))
+            write_csv(layers_csv, [], dataclass_fieldnames(WebMapLayerRow))
+            write_csv(tables_csv, [], dataclass_fieldnames(WebMapTableRow))
+            write_csv(resolution_csv, [], dataclass_fieldnames(ExBLayerReferenceResolutionRow))
+
+            print("\n=== LHI ExB App Inspector: Script 03 Complete ===")
+            print(f"Web map references read: {len(webmap_ref_rows)}")
+            print("Unique web map/web scene items scanned: 0")
+            print("Operational layers extracted: 0")
+            print("Tables extracted: 0")
+            print("ExB layer references classified: 0")
+            print("\nOutputs:")
+            print(f"Web map summary CSV: {summary_csv}")
+            print(f"Web map layers CSV: {layers_csv}")
+            print(f"Web map tables CSV: {tables_csv}")
+            print(f"ExB layer reference resolution CSV: {resolution_csv}")
+            print(f"Log file: {log_path}")
+            return 0
 
         gis = connect_to_portal(
             portal_url=args.portal,
@@ -980,10 +1018,10 @@ def main() -> int:
         tables_csv = CSV_DIR / f"webmap_tables_{output_prefix}_{timestamp}.csv"
         resolution_csv = CSV_DIR / f"exb_layer_reference_resolution_{output_prefix}_{timestamp}.csv"
 
-        write_csv(summary_csv, all_summary_rows)
-        write_csv(layers_csv, all_layer_rows)
-        write_csv(tables_csv, all_table_rows)
-        write_csv(resolution_csv, all_resolution_rows)
+        write_csv(summary_csv, all_summary_rows, dataclass_fieldnames(WebMapSummaryRow))
+        write_csv(layers_csv, all_layer_rows, dataclass_fieldnames(WebMapLayerRow))
+        write_csv(tables_csv, all_table_rows, dataclass_fieldnames(WebMapTableRow))
+        write_csv(resolution_csv, all_resolution_rows, dataclass_fieldnames(ExBLayerReferenceResolutionRow))
 
         print("\n=== LHI ExB App Inspector: Script 03 Complete ===")
         print(f"Web map references read: {len(webmap_ref_rows)}")

@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 06: Full Single-App Inspection Runner v1.1
+Script 06: Full Single-App Inspection Runner v1.1.1
 
 Purpose:
 - Run the full single-app inspection pipeline:
@@ -16,6 +16,7 @@ Purpose:
 - Produce a final HTML sharing compatibility report
 - Print machine-readable failure stage/error markers for Script 07
 - Run Script 08 Layer Identity Resolver after layer health checks
+- Enforce hard per-stage subprocess timeouts so one stuck app cannot block batch scans
 - Prompt for username/password once and reuse credentials securely during this run
 
 Author: Lazy Hat Innovations
@@ -153,16 +154,36 @@ def get_stage_code(stage_name: str) -> str:
     return match.group(1) if match else ""
 
 
-def run_command(cmd: List[str], stage_name: str, dry_run: bool = False, env: Optional[dict] = None) -> None:
+def run_command(
+    cmd: List[str],
+    stage_name: str,
+    dry_run: bool = False,
+    env: Optional[dict] = None,
+    timeout_seconds: Optional[int] = None,
+) -> None:
     printable = " ".join(shlex.quote(str(part)) for part in cmd)
     logging.info("Running %s", stage_name)
     logging.info("Command: %s", printable)
+
+    if timeout_seconds:
+        logging.info("Hard subprocess timeout for %s: %s seconds", stage_name, timeout_seconds)
 
     if dry_run:
         print(f"[DRY RUN] {printable}")
         return
 
-    completed = subprocess.run(cmd, text=True, env=env)
+    try:
+        completed = subprocess.run(
+            cmd,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stage_code = get_stage_code(stage_name)
+        message = f"{stage_name} timed out after {timeout_seconds} seconds"
+        logging.exception(message)
+        raise PipelineStageError(stage_code=stage_code, stage_name=stage_name, message=message) from exc
 
     if completed.returncode != 0:
         stage_code = get_stage_code(stage_name)
@@ -174,6 +195,40 @@ def run_command(cmd: List[str], stage_name: str, dry_run: bool = False, env: Opt
 
 def python_cmd() -> str:
     return sys.executable or "python"
+
+
+def get_stage_timeout_seconds(stage_name: str, args: argparse.Namespace) -> int:
+    """
+    Returns a hard subprocess timeout for each stage.
+
+    This protects multi-app scans from freezing when one app or one ArcGIS API call hangs.
+    Defaults are intentionally conservative enough for large apps but short enough to continue batches.
+    """
+    stage_code = get_stage_code(stage_name)
+
+    custom = {
+        "01": getattr(args, "stage_01_timeout", None),
+        "02": getattr(args, "stage_02_timeout", None),
+        "03": getattr(args, "stage_03_timeout", None),
+        "04": getattr(args, "stage_04_timeout", None),
+        "08": getattr(args, "stage_08_timeout", None),
+        "05": getattr(args, "stage_05_timeout", None),
+    }.get(stage_code)
+
+    if custom:
+        return int(custom)
+
+    defaults = {
+        "01": 180,  # metadata/config retrieval
+        "02": 240,  # dependency extraction
+        "03": 300,  # web map/layer scan
+        "04": 420,  # layer health checks can touch many REST endpoints
+        "08": 420,  # portal search and layer identity resolution
+        "05": 300,  # sharing report generation
+    }
+
+    return defaults.get(stage_code, 300)
+
 
 
 def build_app_input_args(args: argparse.Namespace) -> List[str]:
@@ -222,7 +277,7 @@ def run_stage_01(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.anonymous:
         cmd.append("--anonymous")
 
-    run_command(cmd, "Stage 01 - App Metadata Scan", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 01 - App Metadata Scan", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 01 - App Metadata Scan", args))
 
     if dry_run:
         return
@@ -250,7 +305,7 @@ def run_stage_02(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.output_prefix:
         cmd.extend(["--output-prefix", args.output_prefix])
 
-    run_command(cmd, "Stage 02 - ExB Dependency Extraction", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 02 - ExB Dependency Extraction", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 02 - ExB Dependency Extraction", args))
 
     if dry_run:
         return
@@ -293,7 +348,7 @@ def run_stage_03(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.output_prefix:
         cmd.extend(["--output-prefix", args.output_prefix])
 
-    run_command(cmd, "Stage 03 - Web Map Layer Scan", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 03 - Web Map Layer Scan", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 03 - Web Map Layer Scan", args))
 
     if dry_run:
         return
@@ -343,7 +398,7 @@ def run_stage_04(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.output_prefix:
         cmd.extend(["--output-prefix", args.output_prefix])
 
-    run_command(cmd, "Stage 04 - Layer Health Check", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 04 - Layer Health Check", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 04 - Layer Health Check", args))
 
     if dry_run:
         return
@@ -381,7 +436,7 @@ def run_stage_08(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.output_prefix:
         cmd.extend(["--output-prefix", args.output_prefix])
 
-    run_command(cmd, "Stage 08 - Layer Identity Resolution", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 08 - Layer Identity Resolution", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 08 - Layer Identity Resolution", args))
 
     if dry_run:
         return
@@ -426,7 +481,7 @@ def run_stage_05(args: argparse.Namespace, outputs: PipelineOutputs, dry_run: bo
     if args.output_prefix:
         cmd.extend(["--output-prefix", args.output_prefix])
 
-    run_command(cmd, "Stage 05 - Sharing Compatibility Check", dry_run=dry_run, env=env)
+    run_command(cmd, "Stage 05 - Sharing Compatibility Check", dry_run=dry_run, env=env, timeout_seconds=get_stage_timeout_seconds("Stage 05 - Sharing Compatibility Check", args))
 
     if dry_run:
         return
@@ -474,7 +529,43 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         type=int,
         default=30,
-        help="REST request timeout in seconds for Script 04. Default: 30.",
+        help="REST request timeout in seconds for Script 04 layer HTTP requests. Default: 30.",
+    )
+    parser.add_argument(
+        "--stage-01-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 01 metadata scan. Default: 180.",
+    )
+    parser.add_argument(
+        "--stage-02-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 02 dependency extraction. Default: 240.",
+    )
+    parser.add_argument(
+        "--stage-03-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 03 web map layer scan. Default: 300.",
+    )
+    parser.add_argument(
+        "--stage-04-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 04 layer health check. Default: 420.",
+    )
+    parser.add_argument(
+        "--stage-08-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 08 layer identity resolution. Default: 420.",
+    )
+    parser.add_argument(
+        "--stage-05-timeout",
+        type=int,
+        default=None,
+        help="Hard subprocess timeout in seconds for Stage 05 sharing compatibility check. Default: 300.",
     )
     parser.add_argument(
         "--auth-first",

@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime as dt, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,7 +44,7 @@ OUTPUT_ROOT = Path("outputs")
 CSV_DIR = OUTPUT_ROOT / "csv"
 LOG_DIR = OUTPUT_ROOT / "logs"
 DEFAULT_PORTAL = "https://www.arcgis.com"
-SCRIPT_VERSION = "0.8.4"
+SCRIPT_VERSION = "0.8.5"
 
 
 @dataclass
@@ -154,16 +154,26 @@ def read_csv_dicts(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def write_csv(path: Path, rows: List[Any]) -> None:
-    if not rows:
-        logging.warning("No rows to write for: %s", path)
-        return
+def dataclass_fieldnames(row_type: Any) -> List[str]:
+    return [field.name for field in fields(row_type)]
+
+
+def write_csv(path: Path, rows: List[Any], fieldnames: Optional[List[str]] = None) -> None:
+    if rows:
+        fieldnames = fieldnames or list(asdict(rows[0]).keys())
+    elif not fieldnames:
+        raise ValueError(f"No rows and no fieldnames supplied for CSV: {path}")
+
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
-    logging.info("CSV written: %s | rows: %s", path, len(rows))
+
+    if rows:
+        logging.info("CSV written: %s | rows: %s", path, len(rows))
+    else:
+        logging.warning("Empty CSV written with headers only: %s", path)
 
 
 def normalize_text(value: str) -> str:
@@ -741,8 +751,8 @@ def main() -> int:
         summary_csv = CSV_DIR / f"layer_identity_summary_{output_prefix}_{timestamp}.csv"
         details_csv = CSV_DIR / f"layer_identity_resolution_{output_prefix}_{timestamp}.csv"
 
-        write_csv(summary_csv, [summary])
-        write_csv(details_csv, resolution_rows)
+        write_csv(summary_csv, [summary], dataclass_fieldnames(LayerIdentitySummaryRow))
+        write_csv(details_csv, resolution_rows, dataclass_fieldnames(LayerIdentityResolutionRow))
 
         print(f"\n=== LHI ExB App Inspector: Script 08 v{SCRIPT_VERSION} Complete ===")
         print(f"Layers resolved: {summary.total_layers}")

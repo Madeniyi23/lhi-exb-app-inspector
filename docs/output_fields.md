@@ -25,6 +25,25 @@ Key fields include:
 - `error_message`
 - `html_report_path`
 
+## Script 09 discovery fields
+
+Key fields include:
+
+- `app_item_id`
+- `app_title`
+- `app_type`
+- `owner`
+- `access`
+- `modified_utc`
+- `exb_status`
+- `exb_version`
+- `publish_version`
+- `template_id`
+- `is_template`
+- `is_published`
+- `is_draft`
+- `likely_experience_builder`
+
 ## Layer identity fields
 
 Script 08 outputs include:
