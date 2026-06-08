@@ -1,5 +1,17 @@
 # Workflow
 
+## Streamlit workflow
+
+```text
+1. Run Streamlit
+2. Enter portal credentials
+3. Discover Experience Builder apps
+4. Preview the discovery table
+5. Run multi-app inspection
+6. Review the packaged batch output
+7. Open master HTML report or batch folder
+```
+
 ## Full single-app workflow
 
 ```text
@@ -21,20 +33,3 @@ Use `06_run_full_exb_inspection.py` to run this pipeline.
 → 07_run_multi_exb_inspection
 → outputs/batches/<batch_id>
 ```
-
-## Recommended batch process
-
-1. Use Script 09 to discover operational apps.
-2. Start with `--limit 50`.
-3. Run Script 07 against the generated input CSV.
-4. Review failures, critical apps, and internal service risks.
-5. Increase to 100+ apps after the 50-app test is stable.
-
-## Recommended review order
-
-1. Open the packaged master HTML.
-2. Review failed scans.
-3. Review critical/high risk apps.
-4. Expand app rows for diagnosis.
-5. Open individual app reports when needed.
-6. Review layer identity CSVs for ambiguous or internal service layers.

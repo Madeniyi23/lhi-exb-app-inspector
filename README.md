@@ -1,10 +1,10 @@
 # LHI ExB App Inspector
 
-**LHI ExB App Inspector** is a Python-based diagnostic tool for auditing ArcGIS Experience Builder applications.
+**LHI ExB App Inspector** is a Python and Streamlit-based diagnostic tool for auditing ArcGIS Experience Builder applications.
 
 It helps GIS developers, ArcGIS Online administrators, and municipal GIS teams inspect what Experience Builder apps depend on before users discover broken widgets, inaccessible services, sharing mismatches, or internal network dependencies.
 
-**Current status:** `v1.1.2 stability release`
+**Current status:** `v1.1.3 report clarity release`
 
 ---
 
@@ -26,6 +26,7 @@ The tool scans Experience Builder apps and reports on:
 - Multi-app portfolio summaries
 - Shareable batch output folders
 - Org-wide Experience Builder discovery
+- Local Streamlit UI for discovery, inspection, and report review
 
 ---
 
@@ -48,24 +49,64 @@ The full single-app pipeline is:
 | `06_run_full_exb_inspection.py` | Runs the full pipeline for one app with hard stage timeouts |
 | `07_run_multi_exb_inspection.py` | Runs the full pipeline for many apps and creates a packaged master report |
 | `09_discover_exb_apps.py` | Discovers Experience Builder apps across the organization and creates Script 07 input CSVs |
+| `app.py` | Streamlit local UI for discovery, scan execution, and result review |
 
 ---
 
-## Quick start
+## Quick start: Streamlit UI
 
-### 1. Install requirements
+### 1. Install UI requirements
 
 ```bat
-pip install -r requirements.txt
+pip install -r requirements_streamlit.txt
 ```
 
-If using ArcGIS Pro, run from the `arcgispro-py3` environment.
+If ArcGIS Pro Python is locked down, run Streamlit from a separate Python environment and set the ArcGIS Pro Python path in the sidebar.
+
+Example:
+
+```bat
+"C:\GIS\python-3.14.5-embed-amd64\python.exe" -m streamlit run app.py
+```
+
+### 2. Run the UI
+
+```bat
+streamlit run app.py
+```
+
+or:
+
+```bat
+python -m streamlit run app.py
+```
+
+### 3. In the sidebar
+
+Set:
+
+```text
+Portal URL
+Username
+Password
+Python executable = C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3\python.exe
+```
+
+### 4. Use the workflow tabs
+
+```text
+1. Discover Apps
+2. Run Inspection
+3. Review Results
+```
+
+The Review Results tab can open the local master HTML report and batch folder.
 
 ---
 
-### 2. Discover Experience Builder apps
+## Quick start: command line
 
-Example: discover operational apps only, excluding drafts and templates.
+### Discover Experience Builder apps
 
 ```bat
 python 09_discover_exb_apps.py ^
@@ -79,26 +120,13 @@ python 09_discover_exb_apps.py ^
   --limit 50
 ```
 
-This creates a Script 07-ready CSV:
-
-```text
-outputs/csv/discovered_exb_apps_input_*.csv
-```
-
----
-
-### 3. Run a multi-app scan
+### Run a multi-app scan
 
 ```bat
 python 07_run_multi_exb_inspection.py ^
   --portal "https://yourorg.maps.arcgis.com/" ^
+  --username "YOUR_USERNAME" ^
   --apps-csv "outputs/csv/discovered_exb_apps_input_*.csv"
-```
-
-The packaged output will be created here:
-
-```text
-outputs/batches/<batch_id>/
 ```
 
 Open:
@@ -109,82 +137,25 @@ outputs/batches/<batch_id>/master/exb_app_inspector_master_report.html
 
 ---
 
-### 4. Run a single app scan
+## v1.1.3 report clarity improvements
 
-```bat
-python 06_run_full_exb_inspection.py ^
-  --portal "https://yourorg.maps.arcgis.com/" ^
-  --item-id "YOUR_EXB_APP_ITEM_ID" ^
-  --username "YOUR_USERNAME"
-```
-
----
-
-## Packaged batch output
-
-Each batch contains:
-
-```text
-outputs/batches/<batch_id>/
-├── master/
-│   ├── exb_app_inspector_master_summary.csv
-│   └── exb_app_inspector_master_report.html
-├── apps/
-│   └── <app_name_itemid>/
-│       ├── individual_report.html
-│       ├── sharing_summary.csv
-│       ├── sharing_recommendations.csv
-│       ├── layer_identity_summary.csv
-│       ├── layer_identity_resolution.csv
-│       ├── app_scan.log
-│       └── logs/
-└── logs/
-    └── run_multi_exb_inspection.log
-```
-
----
-
-## v1.1.2 stability improvements
-
-This release hardens the engine before moving into the Streamlit/UI phase.
+This release focuses on making the reports more accurate and less misleading for internal/org-only apps.
 
 Key improvements:
 
-- Script 01 now uses REST-first metadata/config retrieval and direct token generation.
-- Script 06 now enforces hard stage-level subprocess timeouts.
-- Scripts 02, 03, 04, 05, and 08 now handle valid zero-row/no-map outputs by writing empty CSV files with headers.
-- Script 09 supports org-wide ExB discovery, operational-status filtering, template exclusion, and test-batch limits.
-- A 50-app operational test batch completed with 49 successful scans and 1 isolated Stage 03 failure.
-
----
-
-## Internal service detection
-
-The classifier distinguishes real internal/environment indicators from ordinary business terms.
-
-It flags patterns such as:
-
-```text
-itvpgisappint
-General_Int
-internal
-appint
-gisappint
-arcgisint
-/dev/
-test-server
-/uat/
-staging
-sandbox
-```
-
-It avoids false positives from normal business words such as:
-
-```text
-Development
-Development Applications
-Development Planning
-```
+- Refined internal dependency risk classification.
+- Public app/web map + unreachable internal active layer remains critical.
+- Org/shared/private app + unreachable internal active layer is now a high-priority validation item.
+- Internal unreachable layer with no active dependency is treated as review.
+- Renamed report columns:
+  - `Health Risk` → `Endpoint Health`
+  - `Severity` → `Action Severity`
+- Blank endpoint health values now show as `not checked`.
+- Added report interpretation notes explaining scanner context, endpoint health, action severity, and operational risk.
+- Streamlit UI v0.1.3 improves local report opening with:
+  - Open master HTML report
+  - Open batch folder
+  - Clearer guidance about full batch ZIPs vs single downloaded HTML files
 
 ---
 
@@ -201,20 +172,6 @@ Do not commit real outputs if they contain:
 - Raw JSON files
 
 The `.gitignore` excludes outputs and common sensitive/local files by default.
-
----
-
-## Roadmap
-
-Planned next phases:
-
-- Streamlit local UI
-- Better report viewer inside the UI
-- Batch history and comparison
-- AGOL dashboard export table
-- Performance scoring
-- User/group access comparison
-- Stage 03 crash hardening / REST-first web map reads
 
 ---
 

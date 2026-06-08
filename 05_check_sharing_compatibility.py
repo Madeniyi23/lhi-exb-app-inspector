@@ -1,6 +1,6 @@
 """
 LHI ExB App Inspector
-Script 05: Sharing Compatibility Checker v0.8.7 + Interactive HTML Report
+Script 05: Sharing Compatibility Checker v0.8.9 + Interactive HTML Report
 
 Purpose:
 - Combine outputs from Scripts 01, 03, and 04
@@ -10,6 +10,8 @@ Purpose:
 - Classify internal/dev/test service endpoints as access-design risks when relevant
 - Avoid false alarms when app is org-shared but web map/layers are public
 - Produce CSV outputs plus an interactive HTML report
+- Refine internal-service severity so internal/org apps are marked for validation instead of automatically critical
+- Improve HTML wording for endpoint health vs action severity and show blank health as not checked
 
 Inputs:
 - app_summary_*.csv from Script 01
@@ -314,6 +316,33 @@ def is_public_access(access: str) -> bool:
     return (access or "").strip().lower() == "public"
 
 
+def sharing_context(app_access: str, webmap_access: str) -> str:
+    """
+    Classify the intended sharing context for severity decisions.
+
+    The scanner's access context is not always the same as the real user context.
+    A public app/web map with internal unreachable services is a stronger mismatch.
+    An org/shared/private app with internal unreachable services is usually an
+    internal dependency validation issue, not automatically a public-facing failure.
+    """
+    app = (app_access or "").strip().lower()
+    webmap = (webmap_access or "").strip().lower()
+
+    if app == "public" or webmap == "public":
+        return "public_or_public_webmap"
+
+    if app in {"org", "organization"} or webmap in {"org", "organization"}:
+        return "organization"
+
+    if app in {"shared", "group", "groups"} or webmap in {"shared", "group", "groups"}:
+        return "group_shared"
+
+    if app in {"private", "none", ""} and webmap in {"private", "none", ""}:
+        return "private_or_unknown"
+
+    return "internal_or_restricted"
+
+
 # -----------------------------------------------------------------------------
 # Index helpers
 # -----------------------------------------------------------------------------
@@ -421,14 +450,36 @@ def evaluate_layer_sharing(
 
     if not endpoint_reachable:
         if internal_service_detected:
-            score = 75 if active_count else 45
-            severity = "critical" if active_count else "warning"
+            context = sharing_context(app_access, webmap_access)
+
+            if context == "public_or_public_webmap":
+                score = 80 if active_count else 55
+                severity = "critical" if active_count else "high"
+                return (
+                    "public_app_internal_network_layer_mismatch" if active_count else "public_app_internal_network_layer_not_reachable",
+                    severity,
+                    score,
+                    f"Layer endpoint is not reachable and appears to reference an internal/dev/test service endpoint ({internal_service_reason}) while the app or web map has public exposure. This is a likely audience/access mismatch.",
+                    "For public-facing apps, replace the internal service with a public/hosted view, or restrict the app and web map to the intended internal audience.",
+                )
+
+            if active_count:
+                score = 60
+                severity = "high"
+                return (
+                    "internal_dependency_unreachable_validate",
+                    severity,
+                    score,
+                    f"Layer endpoint is not reachable from the scanner and appears to reference an internal/dev/test service endpoint ({internal_service_reason}). Active widgets depend on this layer, so this should be validated against the intended network and authentication context.",
+                    "Validate that intended users can reach this service from the required network/VPN and that the service is currently available. Do not replace with a public service unless the app is intended for public users.",
+                )
+
             return (
-                "internal_network_layer_access_risk" if active_count else "internal_network_layer_not_reachable",
-                severity,
-                score,
-                f"Layer endpoint is not reachable and appears to reference an internal/dev/test service endpoint ({internal_service_reason}). This is more serious if active widgets depend on it.",
-                "If this app is public or broadly shared, replace this internal service with a public/hosted view or restrict the app/web map to the intended internal audience. If it is internal-only, confirm users are on the network/VPN and the service is available.",
+                "internal_dependency_not_reachable_no_active_deps",
+                "review",
+                20,
+                f"Layer endpoint is not reachable from the scanner and appears to reference an internal/dev/test service endpoint ({internal_service_reason}). No active widget dependency was detected.",
+                "Treat as an internal dependency note. Confirm service availability only if this layer is visible, user-facing, or expected to support widgets.",
             )
 
         score = 70 if active_count else 45
@@ -623,9 +674,9 @@ def make_summary_row(
     if possible_broken_count:
         overall_score += possible_broken_count * 25
 
-    if critical or operational_score >= 100:
+    if critical:
         operational_risk = "critical"
-    elif high or possible_broken_count or operational_score >= 50:
+    elif high or possible_broken_count or operational_score >= 100:
         operational_risk = "high"
     elif medium or operational_score >= 15:
         operational_risk = "medium"
@@ -663,7 +714,10 @@ def make_summary_row(
 
     if internal_service_count:
         issues.append(f"{internal_service_count} layer(s) appear to reference internal/dev/test service endpoints.")
-        recommendations.append("Confirm whether internal service URLs are appropriate for the app/web map audience.")
+        if internal_service_unreachable_count:
+            recommendations.append("Validate internal service reachability from the intended user network/authentication context before treating this as a broken public-facing app.")
+        else:
+            recommendations.append("Confirm whether internal service URLs are appropriate for the app/web map audience.")
 
     if template_residue_count:
         issues.append(f"{template_residue_count} likely template/copy residue dependency references were detected.")
@@ -780,6 +834,19 @@ def badge(value: str) -> str:
     return f'<span class="badge {cls}">{esc(value)}</span>'
 
 
+def endpoint_health_badge(value: str) -> str:
+    """
+    Endpoint Health is the raw REST endpoint health result.
+    Blank values mean the health checker did not have a direct REST endpoint to test.
+    """
+    clean = safe_str(value).strip()
+    if not clean:
+        return '<span class="badge neutral">not checked</span>'
+
+    cls = severity_class(clean)
+    return f'<span class="badge {cls}">{esc(clean)}</span>'
+
+
 def card(title: str, value: Any, subtitle: str = "", cls: str = "neutral") -> str:
     return f"""
     <div class="card {severity_class(cls)}">
@@ -799,7 +866,7 @@ def table_rows_for_details(detail_rows: List[SharingCompatibilityDetailRow]) -> 
           <td>{esc(row.layer_visibility)}</td>
           <td>{esc(row.layer_access_mode_used)}</td>
           <td>{'Yes' if row.layer_endpoint_reachable else 'No'}</td>
-          <td>{badge(row.layer_risk_level)}</td>
+          <td>{endpoint_health_badge(row.layer_risk_level)}</td>
           <td>{esc(row.active_dependency_count)}</td>
           <td class="small">{esc(row.active_dependency_widgets)}</td>
           <td>{esc(row.sharing_status)}</td>
@@ -1057,11 +1124,11 @@ th {{
           <th>Visible</th>
           <th>Access Mode</th>
           <th>Reachable</th>
-          <th>Health Risk</th>
+          <th>Endpoint Health</th>
           <th>Active Deps</th>
           <th>Widgets</th>
           <th>Sharing Status</th>
-          <th>Severity</th>
+          <th>Action Severity</th>
           <th>Recommendation</th>
         </tr>
       </thead>
@@ -1094,7 +1161,10 @@ th {{
     <h2>Interpretation Notes</h2>
     <p class="note"><strong>Template residue:</strong> copied or embedded data source references inherited from a reusable Experience Builder template. These are informational unless the related widgets are visible and failing.</p>
     <p class="note"><strong>Anonymous access:</strong> means the REST endpoint was reachable without a token. This is desirable for public-facing services and avoids false invalid-token failures from mixed AGOL/Enterprise setups.</p>
-    <p class="note"><strong>Operational risk:</strong> reflects active sharing/layer problems. Maintenance notes do not automatically mean the app is broken.</p>
+    <p class="note"><strong>Scanner context:</strong> unreachable internal services mean the scanner could not reach the REST endpoint from its current access/network context. This does not automatically prove the app is broken for authenticated internal users.</p>
+    <p class="note"><strong>Endpoint Health:</strong> reflects raw REST endpoint reachability. <strong>Not checked</strong> means no direct REST endpoint was available for the health checker; it does not mean low risk.</p>
+    <p class="note"><strong>Action Severity:</strong> reflects the app/web map sharing context, endpoint health, and whether active widgets depend on the layer.</p>
+    <p class="note"><strong>Operational risk:</strong> reflects active sharing/layer problems. Internal dependencies in org/private apps are treated as validation items unless there is public exposure or confirmed service failure.</p>
     <div class="footer">Lazy Hat Innovations · Build fast. Think deeply. Publish strategically.</div>
   </section>
 </main>

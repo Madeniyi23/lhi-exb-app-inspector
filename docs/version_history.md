@@ -1,20 +1,23 @@
 # Version History
 
+## v1.1.3 report clarity release
+
+- Added Streamlit UI v0.1.3 report open fix.
+- Added `Open master HTML report` and `Open batch folder` support.
+- Clarified that downloading master HTML only does not preserve individual report links.
+- Refined Script 05 report severity model for internal/org apps.
+- Renamed `Health Risk` to `Endpoint Health`.
+- Renamed `Severity` to `Action Severity`.
+- Replaced blank endpoint health with `not checked`.
+- Added interpretation notes for scanner context, endpoint health, action severity, and operational risk.
+
 ## v1.1.2 stability release
 
 - Added REST-first Script 01 metadata/config retrieval with direct token generation.
 - Added hard stage-level subprocess timeouts in Script 06.
 - Added empty CSV handling for valid no-map/no-layer apps across Scripts 02, 03, 04, 05, and 08.
-- Added Script 09 improvements for operational discovery:
-  - `--mode broad`
-  - `--status published-or-changed`
-  - `--item-type web-experience-only`
-  - `--exclude-templates`
-  - `--limit`
-- Confirmed 50-app operational test batch:
-  - 50 apps scanned
-  - 49 successful
-  - 1 isolated Stage 03 failure
+- Added Script 09 improvements for operational discovery.
+- Confirmed 50-app operational test batch.
 
 ## v1.1 stable MVP
 
@@ -22,8 +25,6 @@
 - Added layer identity resolver outputs to packaged batches.
 - Added child-stage log packaging.
 - Refined internal-service classifier to avoid false positives from business terms like "Development".
-- Fixed Script 04/05 imports introduced by classifier refinement.
-- Confirmed clean 11-app batch run with 11 successful scans.
 
 ## v1.0-alpha
 
