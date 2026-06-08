@@ -1,5 +1,20 @@
 # Version History
 
+## v1.2.0 selective inspection workflow
+
+- Added Streamlit UI v0.2.0.
+- Added app selection after discovery.
+- Added discovery preview filters by owner, access, status, and search text.
+- Added manual checkbox selection workflow.
+- Added "use all filtered rows" workflow.
+- Added selected-apps CSV generation.
+- Added Run Inspection input source options:
+  - Selected apps from UI
+  - Discovery-generated CSV
+  - Manual/custom CSV
+- Added queued-app preview before inspection.
+- Confirmed targeted 3-app scan workflow.
+
 ## v1.1.3 report clarity release
 
 - Added Streamlit UI v0.1.3 report open fix.

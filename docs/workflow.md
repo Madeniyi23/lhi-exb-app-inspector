@@ -33,3 +33,16 @@ Use `06_run_full_exb_inspection.py` to run this pipeline.
 → 07_run_multi_exb_inspection
 → outputs/batches/<batch_id>
 ```
+
+
+## Selective inspection workflow
+
+```text
+1. Run Script 09 from the Discover Apps tab.
+2. Review the discovered apps table.
+3. Filter by owner, access, status, or text search.
+4. Select apps manually or use all filtered rows.
+5. Create a selected-apps CSV.
+6. In Run Inspection, choose "Selected apps from UI".
+7. Run Script 07 against the selected-apps CSV.
+```

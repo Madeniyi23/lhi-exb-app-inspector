@@ -28,7 +28,7 @@ import streamlit as st
 
 
 APP_TITLE = "LHI ExB App Inspector"
-APP_VERSION = "Streamlit MVP v0.1.3"
+APP_VERSION = "Streamlit MVP v0.2.0"
 
 
 # -----------------------------------------------------------------------------
@@ -116,6 +116,68 @@ def read_csv_preview(path: Path, max_rows: int = 500) -> pd.DataFrame:
     except Exception as exc:
         st.warning(f"Could not read CSV: {path}\n\n{exc}")
         return pd.DataFrame()
+
+
+def write_selected_apps_csv(root: Path, selected_df: pd.DataFrame) -> Path:
+    """
+    Writes a Script 07-compatible CSV from selected discovery rows.
+
+    Script 07 expects at minimum app_item_id. We also include app_name and notes
+    for readability.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = csv_dir(root) / f"selected_exb_apps_input_{timestamp}.csv"
+
+    rows = []
+    for _, row in selected_df.iterrows():
+        app_item_id = (
+            row.get("app_item_id")
+            or row.get("item_id")
+            or row.get("id")
+            or ""
+        )
+        app_name = (
+            row.get("app_title")
+            or row.get("title")
+            or row.get("app_name")
+            or ""
+        )
+
+        rows.append(
+            {
+                "app_item_id": app_item_id,
+                "app_name": app_name,
+                "notes": "Selected from Streamlit discovery table",
+            }
+        )
+
+    out_df = pd.DataFrame(rows)
+    out_df = out_df[out_df["app_item_id"].astype(str).str.len() > 0]
+    out_df.to_csv(output_path, index=False)
+    return output_path
+
+
+def apply_discovery_filters(df: pd.DataFrame, owner_filter: str, access_filter: str, status_filter: str, search_text: str) -> pd.DataFrame:
+    filtered = df.copy()
+
+    if owner_filter and "owner" in filtered.columns:
+        owners = [x.strip().lower() for x in owner_filter.split(",") if x.strip()]
+        if owners:
+            filtered = filtered[filtered["owner"].astype(str).str.lower().isin(owners)]
+
+    if access_filter and "access" in filtered.columns:
+        accesses = [x.strip().lower() for x in access_filter.split(",") if x.strip()]
+        if accesses:
+            filtered = filtered[filtered["access"].astype(str).str.lower().isin(accesses)]
+
+    if status_filter and status_filter.lower() != "all" and "exb_status" in filtered.columns:
+        filtered = filtered[filtered["exb_status"].astype(str).str.lower() == status_filter.lower()]
+
+    if search_text:
+        haystack = filtered.astype(str).agg(" ".join, axis=1).str.lower()
+        filtered = filtered[haystack.str.contains(search_text.lower(), na=False)]
+
+    return filtered
 
 
 def zip_folder(folder: Path, zip_path: Path) -> Path:
@@ -421,18 +483,126 @@ with tab_discover:
 
     latest_inventory = st.session_state.get("latest_inventory_csv") or ""
     if latest_inventory and Path(latest_inventory).exists():
-        st.subheader("Latest Discovery Preview")
-        df = read_csv_preview(Path(latest_inventory), max_rows=500)
-        st.dataframe(df, use_container_width=True, height=420)
+        st.subheader("Latest Discovery Preview + Selection")
+
+        df = read_csv_preview(Path(latest_inventory), max_rows=5000)
 
         if not df.empty:
-            col_a, col_b, col_c, col_d = st.columns(4)
-            col_a.metric("Apps in preview", len(df))
-            if "exb_status" in df.columns:
-                col_b.metric("Published", int((df["exb_status"].astype(str).str.lower() == "published").sum()))
-                col_c.metric("Changed", int((df["exb_status"].astype(str).str.lower() == "changed").sum()))
-            if "owner" in df.columns:
-                col_d.metric("Owners", df["owner"].nunique())
+            st.caption("Filter the discovered apps, choose rows to inspect, then create a selected-apps CSV for Script 07.")
+
+            filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+            with filter_col1:
+                ui_owner_filter = st.text_input("Filter preview by owner", value="", key="preview_owner_filter")
+            with filter_col2:
+                ui_access_filter = st.text_input("Filter preview by access", value="", key="preview_access_filter", help="Example: public, org, private, shared")
+            with filter_col3:
+                ui_status_filter = st.selectbox("Filter preview by status", ["all", "Published", "Changed", "Draft"], index=0, key="preview_status_filter")
+            with filter_col4:
+                ui_search_filter = st.text_input("Search preview", value="", key="preview_search_filter")
+
+            filtered_df = apply_discovery_filters(
+                df=df,
+                owner_filter=ui_owner_filter,
+                access_filter=ui_access_filter,
+                status_filter=ui_status_filter,
+                search_text=ui_search_filter,
+            )
+
+            metric_a, metric_b, metric_c, metric_d, metric_e = st.columns(5)
+            metric_a.metric("Filtered apps", len(filtered_df))
+            if "exb_status" in filtered_df.columns:
+                metric_b.metric("Published", int((filtered_df["exb_status"].astype(str).str.lower() == "published").sum()))
+                metric_c.metric("Changed", int((filtered_df["exb_status"].astype(str).str.lower() == "changed").sum()))
+            if "owner" in filtered_df.columns:
+                metric_d.metric("Owners", filtered_df["owner"].nunique())
+            if "access" in filtered_df.columns:
+                metric_e.metric("Public", int((filtered_df["access"].astype(str).str.lower() == "public").sum()))
+
+            selection_mode = st.radio(
+                "Selection mode",
+                ["Manual checkbox selection", "Use all filtered rows"],
+                horizontal=True,
+                key="selection_mode",
+            )
+
+            display_columns = [c for c in [
+                "app_item_id",
+                "app_title",
+                "app_type",
+                "owner",
+                "access",
+                "exb_status",
+                "modified_utc",
+                "num_views",
+                "item_url",
+            ] if c in filtered_df.columns]
+
+            if not display_columns:
+                display_columns = list(filtered_df.columns)
+
+            if selection_mode == "Manual checkbox selection":
+                selectable_df = filtered_df[display_columns].copy()
+                selectable_df.insert(0, "select", False)
+
+                edited_df = st.data_editor(
+                    selectable_df,
+                    use_container_width=True,
+                    height=480,
+                    hide_index=True,
+                    column_config={
+                        "select": st.column_config.CheckboxColumn(
+                            "Select",
+                            help="Choose apps to inspect",
+                            default=False,
+                        )
+                    },
+                    disabled=[c for c in selectable_df.columns if c != "select"],
+                    key="discovery_selection_editor",
+                )
+
+                selected_df = edited_df[edited_df["select"] == True].drop(columns=["select"], errors="ignore")
+            else:
+                st.dataframe(filtered_df[display_columns], use_container_width=True, height=480)
+                selected_df = filtered_df[display_columns].copy()
+
+            selected_count = len(selected_df)
+            st.info(f"Selected apps for inspection: {selected_count}")
+
+            col_sel1, col_sel2, col_sel3 = st.columns([1, 1, 2])
+
+            with col_sel1:
+                create_selected = st.button("✅ Create selected-apps CSV", type="primary", disabled=selected_count == 0)
+
+            with col_sel2:
+                clear_selected = st.button("Clear selected CSV")
+
+            if create_selected:
+                selected_csv = write_selected_apps_csv(root, selected_df)
+                st.session_state["selected_apps_csv"] = str(selected_csv)
+                st.session_state["latest_input_csv"] = str(selected_csv)
+                st.success(f"Selected-apps CSV created: {selected_csv}")
+
+            if clear_selected:
+                st.session_state["selected_apps_csv"] = ""
+                st.success("Selected-apps CSV cleared from this session.")
+
+            selected_csv_state = st.session_state.get("selected_apps_csv", "")
+            if selected_csv_state:
+                st.write("Current selected-apps CSV:")
+                st.code(selected_csv_state)
+
+                if Path(selected_csv_state).exists():
+                    with open(selected_csv_state, "rb") as f:
+                        st.download_button(
+                            label="⬇️ Download selected-apps CSV",
+                            data=f,
+                            file_name=Path(selected_csv_state).name,
+                            mime="text/csv",
+                        )
+
+        else:
+            st.warning("Latest inventory CSV exists, but no rows were loaded.")
+
 
 
 # -----------------------------------------------------------------------------
@@ -446,21 +616,53 @@ with tab_inspect:
     st.info("The UI passes your sidebar username/password to Script 07 so it does not wait for hidden command-line input.")
 
     discovered_inputs = list_csv_files(root, "discovered_exb_apps_input_*.csv")
+    selected_inputs = list_csv_files(root, "selected_exb_apps_input_*.csv")
     manual_inputs = list_csv_files(root, "input_apps*.csv")
-    all_inputs = discovered_inputs + [p for p in manual_inputs if p not in discovered_inputs]
 
-    latest_input_default = st.session_state.get("latest_input_csv") or ""
-    input_options = [str(p) for p in all_inputs]
+    selected_csv_state = st.session_state.get("selected_apps_csv") or ""
+    latest_input_default = st.session_state.get("latest_input_csv") or selected_csv_state or ""
 
-    if latest_input_default and latest_input_default not in input_options:
-        input_options.insert(0, latest_input_default)
+    input_source = st.radio(
+        "Inspection input source",
+        ["Selected apps from UI", "Discovery-generated CSV", "Manual/custom CSV"],
+        horizontal=True,
+    )
 
-    if input_options:
-        apps_csv = st.selectbox("Apps CSV", input_options, index=0)
+    if input_source == "Selected apps from UI":
+        input_options = [str(p) for p in selected_inputs]
+        if selected_csv_state and selected_csv_state not in input_options:
+            input_options.insert(0, selected_csv_state)
+
+        if input_options:
+            apps_csv = st.selectbox("Selected-apps CSV", input_options, index=0)
+        else:
+            apps_csv = ""
+            st.warning("No selected-apps CSV found yet. Go to Discover Apps, select rows, and create a selected-apps CSV.")
+
+    elif input_source == "Discovery-generated CSV":
+        input_options = [str(p) for p in discovered_inputs]
+        if latest_input_default and latest_input_default not in input_options and "discovered_exb_apps_input" in latest_input_default:
+            input_options.insert(0, latest_input_default)
+
+        if input_options:
+            apps_csv = st.selectbox("Discovery input CSV", input_options, index=0)
+        else:
+            apps_csv = ""
+            st.warning("No discovery-generated input CSV found yet.")
+
     else:
-        apps_csv = st.text_input("Apps CSV path", value="")
+        input_options = [str(p) for p in manual_inputs]
+        if input_options:
+            apps_csv = st.selectbox("Manual/custom CSV", input_options, index=0)
+        else:
+            apps_csv = st.text_input("Manual CSV path", value="")
 
     st.caption("The CSV should contain `app_item_id`; optional columns include `app_name` and `notes`.")
+
+    if apps_csv and Path(apps_csv).exists():
+        preview_input_df = read_csv_preview(Path(apps_csv), max_rows=100)
+        st.write(f"Apps queued for inspection: **{len(pd.read_csv(apps_csv)) if Path(apps_csv).exists() else 0}**")
+        st.dataframe(preview_input_df, use_container_width=True, height=220)
 
     run_scan = st.button("🚀 Run Inspection", type="primary")
 
@@ -634,8 +836,9 @@ with tab_about:
     st.code(
         """
         1. Discover apps with Script 09
-        2. Preview discovered inventory
-        3. Run Script 07 against selected/generated input CSV
+        2. Preview and filter discovered inventory
+        3. Select specific apps for inspection
+        4. Run Script 07 against selected/generated input CSV
         4. Review packaged batch results
         """,
         language="text",
@@ -644,7 +847,7 @@ with tab_about:
     st.subheader("Next UI improvements")
     st.write(
         """
-        - Select apps directly from the discovery table
+        - Improve bulk select/select-none controls
         - Show live per-app progress instead of raw command output
         - Add batch history
         - Embed the master HTML report

@@ -4,7 +4,7 @@
 
 It helps GIS developers, ArcGIS Online administrators, and municipal GIS teams inspect what Experience Builder apps depend on before users discover broken widgets, inaccessible services, sharing mismatches, or internal network dependencies.
 
-**Current status:** `v1.1.3 report clarity release`
+**Current status:** `v1.2.0 selective inspection workflow`
 
 ---
 
@@ -96,8 +96,10 @@ Python executable = C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3\py
 
 ```text
 1. Discover Apps
-2. Run Inspection
-3. Review Results
+2. Filter/select apps
+3. Create selected-apps CSV
+4. Run Inspection
+5. Review Results
 ```
 
 The Review Results tab can open the local master HTML report and batch folder.
@@ -134,6 +136,23 @@ Open:
 ```text
 outputs/batches/<batch_id>/master/exb_app_inspector_master_report.html
 ```
+
+---
+
+## v1.2.0 selective inspection workflow
+
+This release adds targeted app selection to the Streamlit UI.
+
+Instead of discovering many apps and scanning everything, users can now:
+
+- Discover Experience Builder apps
+- Filter discovery results by owner, access, status, or search text
+- Select specific apps from the discovery table
+- Create a `selected_exb_apps_input_*.csv`
+- Run Script 07 only against the selected apps
+- Review a smaller, faster master report
+
+This makes the tool much more practical for demos, testing, troubleshooting, and staged portfolio audits.
 
 ---
 
